@@ -314,6 +314,7 @@ export default function App() {
     // Preview Audio State
     const [previewingChar, setPreviewingChar] = useState(null);
     const [copied, setCopied] = useState(false);
+    const [isFormatting, setIsFormatting] = useState(false);
 
     const activeApiKey = userApiKey.trim() || DEFAULT_API_KEY;
 
@@ -834,6 +835,48 @@ export default function App() {
         setTimeout(() => setCopied(false), 2000);
     };
 
+    const handleFormatScript = async () => {
+        if (!script.trim() || isFormatting) return;
+        setIsFormatting(true);
+        setErrorMsg(null);
+
+        const systemPrompt = `You are a strict script formatting assistant for a TTS engine. The user will provide a raw or messy podcast transcript. Your ONLY job is to format it perfectly.
+Rules:
+1. Every single spoken line MUST begin with either 'Speaker 1:' (Maya, the female host) or 'Speaker 2:' (Leo, the male host).
+2. Fix any missing, misspelled, or reversed speaker tags based on the context of the conversation.
+3. Remove any timestamps (e.g., [00:15]) or unnecessary stage directions, BUT keep small emotion tags like (Rire) or (Sourire) as they help the TTS intonation.
+4. Output ONLY the cleaned script. Do not add conversational filler like 'Here is your script'.`;
+
+        const payload = {
+            contents: [{ parts: [{ text: script }] }],
+            systemInstruction: { parts: [{ text: systemPrompt }] }
+        };
+
+        try {
+            const textModel = 'gemini-2.5-flash';
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${textModel}:generateContent?key=${activeApiKey}`;
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                throw new Error(`Erreur API (${response.status}): ${errData?.error?.message || 'Impossible de formater le script.'}`);
+            }
+
+            const data = await response.json();
+            const formattedText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (!formattedText) throw new Error("L'IA n'a pas retourné de texte formaté.");
+            setScript(formattedText.trim());
+        } catch (err) {
+            setErrorMsg(`Erreur Auto-Format: ${err.message}`);
+        } finally {
+            setIsFormatting(false);
+        }
+    };
+
     const handleFileUpload = (e) => {
         const file = e.target.files?.[0];
         if (!file) return;
@@ -1026,6 +1069,25 @@ export default function App() {
                             <Upload className="w-4 h-4" />
                             <input type="file" accept=".txt,.md" onChange={handleFileUpload} className="hidden" />
                         </label>
+
+                        {script.length > 0 && (
+                            <button 
+                                onClick={handleFormatScript}
+                                disabled={isFormatting || isGenerating}
+                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                                    isFormatting 
+                                        ? 'bg-amber-500/10 border-amber-500/30 text-amber-400 cursor-wait' 
+                                        : 'bg-violet-500/10 border-violet-500/30 text-violet-400 hover:bg-violet-500/20 hover:border-violet-500/50'
+                                }`}
+                                title="Nettoyer et formater le script avec l'IA Gemini"
+                            >
+                                {isFormatting ? (
+                                    <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Formatting...</>
+                                ) : (
+                                    <><Sparkles className="w-3.5 h-3.5" /> Auto-Format (AI)</>
+                                )}
+                            </button>
+                        )}
 
                         {script.length > 0 && (
                             <button 
