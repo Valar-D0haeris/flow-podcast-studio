@@ -1228,18 +1228,32 @@ Rules:
                         <div className="flex items-start gap-3">
                             <AlertCircle className="w-5 h-5 text-red-400 mt-0.5 flex-shrink-0" />
                             <div className="flex flex-col gap-1.5">
-                                <span className="text-xs font-semibold text-red-400">Message d'information / API</span>
-                                <p className="text-xs text-red-300 leading-relaxed">{errorMsg}</p>
+                                <span className="text-xs font-semibold text-red-400">Erreur / Message d'information API</span>
+                                <p className="text-xs text-red-300 leading-relaxed font-mono bg-red-950/40 p-2 rounded border border-red-500/20">{errorMsg}</p>
 
-                                {(errorMsg.toLowerCase().includes("key") || errorMsg.toLowerCase().includes("erreur api") || errorMsg.toLowerCase().includes("400") || errorMsg.toLowerCase().includes("403")) && (
-                                    <button 
-                                        onClick={() => { setShowKeySettings(true); setErrorMsg(null); }}
-                                        className="mt-1 self-start flex items-center gap-1.5 px-3 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-200 rounded-lg text-xs font-medium border border-red-500/30 transition-colors"
-                                    >
-                                        <Key className="w-3.5 h-3.5" />
-                                        Saisir ma propre clé API Gemini
-                                    </button>
-                                )}
+                                {/* Contextual Help & Actions */}
+                                {errorMsg.includes("429") || errorMsg.includes("quota") || errorMsg.includes("RESOURCE_EXHAUSTED") ? (
+                                    <div className="mt-1 text-[11px] text-amber-300/90 bg-amber-500/10 p-2.5 rounded-lg border border-amber-500/20 flex flex-col gap-1">
+                                        <span className="font-semibold text-amber-400">🟡 Quota API Gemini Atteint (429)</span>
+                                        <span>• Vous avez dépassé la limite de requêtes gratuites (10 requêtes / minute par modèle).</span>
+                                        <span>• <strong>Solution :</strong> Patientez 1 à 2 minutes ou changez le modèle TTS en haut à droite.</span>
+                                    </div>
+                                ) : (errorMsg.includes("400") || errorMsg.includes("403") || errorMsg.toLowerCase().includes("key")) ? (
+                                    <div className="mt-1 flex flex-col gap-2">
+                                        <div className="text-[11px] text-red-300/90 bg-red-950/30 p-2.5 rounded-lg border border-red-500/20 flex flex-col gap-1">
+                                            <span className="font-semibold text-red-300">🔴 Clé API Invalide ou Manquante</span>
+                                            <span>• Si vous êtes sur Vercel : avez-vous <strong>Redéployé (Redeploy)</strong> après avoir ajouté <code>VITE_GEMINI_API_KEY</code> ?</span>
+                                            <span>• Assurez-vous d'avoir copié votre clé depuis <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="underline text-indigo-300">Google AI Studio</a>.</span>
+                                        </div>
+                                        <button 
+                                            onClick={() => { setShowKeySettings(true); setErrorMsg(null); }}
+                                            className="self-start flex items-center gap-1.5 px-3 py-1.5 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-200 rounded-lg text-xs font-medium border border-indigo-500/30 transition-colors"
+                                        >
+                                            <Key className="w-3.5 h-3.5" />
+                                            Modifier ma clé API Gemini dans l'application
+                                        </button>
+                                    </div>
+                                ) : null}
                             </div>
                         </div>
 
