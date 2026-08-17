@@ -7,7 +7,7 @@ import {
     PauseOctagon, PlaySquare, StopCircle, AlertOctagon, Sliders, Shield
 } from 'lucide-react';
 
-const DEFAULT_API_KEY = "";
+const DEFAULT_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || "";
 
 const GEMINI_VOICES = [
     { id: 'Puck', name: 'Puck (Grave & Chaleureux)', style: 'Masculin - Chaleureux' },
