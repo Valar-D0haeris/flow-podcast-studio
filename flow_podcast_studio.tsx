@@ -474,8 +474,10 @@ export default function App() {
             sysText = "You are Leo, a friendly, dynamic, and casual podcast co-host speaking conversational English with natural energy. Keep it engaging and grounded.";
         }
 
+        const promptText = `Instructions: ${sysText}\n\nText: ${textToSpeak}`;
+
         const payload = {
-            contents: [{ parts: [{ text: textToSpeak }] }],
+            contents: [{ parts: [{ text: promptText }] }],
             generationConfig: {
                 responseModalities: ["AUDIO"],
                 speechConfig: {
@@ -483,8 +485,7 @@ export default function App() {
                         prebuiltVoiceConfig: { voiceName }
                     }
                 }
-            },
-            systemInstruction: { parts: [{ text: sysText }] }
+            }
         };
 
         const urlModel = targetModel.startsWith('models/') ? targetModel : `models/${targetModel}`;
@@ -507,7 +508,7 @@ export default function App() {
         return base64ToArrayBuffer(audioBase64);
     };
 
-    // Smart chunk TTS: multi-speaker with locked voices + systemInstruction
+    // Smart chunk TTS: multi-speaker with locked voices
     const callGeminiChunkTTS = async (chunkBlocks: {speaker: string; text: string}[], allDetected: string[], targetModel = selectedModel) => {
         const chunkText = chunkBlocks.map(b => `${b.speaker}: ${b.text}`).join('\n');
 
@@ -531,7 +532,7 @@ export default function App() {
             }
         }));
 
-        const promptText = `Read the following dialogue naturally in its original language, acting out the roles with authentic emotions and natural conversational pacing:\n\nDialogue:\n${chunkText}`;
+        const promptText = `${buildSystemInstruction()}\n\nDialogue:\n${chunkText}`;
 
         const payload = {
             contents: [{ parts: [{ text: promptText }] }],
@@ -542,9 +543,6 @@ export default function App() {
                         speakerVoiceConfigs
                     }
                 }
-            },
-            systemInstruction: {
-                parts: [{ text: buildSystemInstruction() }]
             }
         };
 
