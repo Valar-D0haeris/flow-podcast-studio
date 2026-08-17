@@ -453,28 +453,25 @@ export default function App() {
         return config ? config.voice : GEMINI_VOICES[0].id;
     };
 
+    // Pre-process text before TTS to remove stage directions like (Rire), (Sourire)
+    const cleanTextForTTS = (text: string): string => {
+        if (!text) return "";
+        let cleaned = text.replace(/\((?:rire|rires)\)/gi, 'Haha,');
+        cleaned = cleaned.replace(/\([^)]+\)/g, '');
+        return cleaned.replace(/\s{2,}/g, ' ').trim();
+    };
+
     // Build systemInstruction text combining both speaker personas
     const buildSystemInstruction = (): string => {
-        return [
-            "You are narrating a podcast with two hosts.",
-            "Speaker 1 is Maya: a warm, steady, and clear podcast host speaking conversational English. Keep her tone natural, calm, and educational. Do not exaggerate emotions.",
-            "Speaker 2 is Leo: a friendly, dynamic, and casual podcast co-host speaking conversational English with natural energy. Keep it engaging and grounded.",
-            "Read the dialogue naturally in its original language, maintaining authentic conversational pacing, subtle emotions, and natural breathing pauses."
-        ].join('\n');
+        return "Read this podcast dialogue naturally and conversationally.";
     };
 
     // Single-speaker TTS for voice preview tests
     const callGeminiSingleTTS = async (character: string, textToSpeak: string, targetModel = selectedModel) => {
         const voiceName = getLockedVoice(character);
-        const charLower = character.toLowerCase();
-        let sysText = "Read naturally.";
-        if (charLower.includes('maya') || character === characters[0]) {
-            sysText = "You are Maya, a warm, steady, and clear podcast host speaking conversational English. Keep your tone natural, calm, and educational. Do not exaggerate emotions.";
-        } else if (charLower.includes('leo') || character === characters[1]) {
-            sysText = "You are Leo, a friendly, dynamic, and casual podcast co-host speaking conversational English with natural energy. Keep it engaging and grounded.";
-        }
+        const sysText = "Read this podcast dialogue naturally and conversationally.";
 
-        const promptText = `Instructions: ${sysText}\n\nText: ${textToSpeak}`;
+        const promptText = `Instructions: ${sysText}\n\nText: ${cleanTextForTTS(textToSpeak)}`;
 
         const payload = {
             contents: [{ parts: [{ text: promptText }] }],
@@ -510,7 +507,7 @@ export default function App() {
 
     // Smart chunk TTS: multi-speaker with locked voices
     const callGeminiChunkTTS = async (chunkBlocks: {speaker: string; text: string}[], allDetected: string[], targetModel = selectedModel) => {
-        const chunkText = chunkBlocks.map(b => `${b.speaker}: ${b.text}`).join('\n');
+        const chunkText = chunkBlocks.map(b => `${b.speaker}: ${cleanTextForTTS(b.text)}`).join('\n');
 
         // Collect unique speakers in this chunk
         const uniqueSpeakers = [...new Set(chunkBlocks.map(b => b.speaker))];
