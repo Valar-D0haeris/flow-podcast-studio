@@ -304,7 +304,7 @@ export default function App() {
     const [characters, setCharacters] = useState<string[]>([]);
     
     // Character configurations
-    const [voiceConfigs, setVoiceConfigs] = useState<Record<string, { voice: string, prompt: string }>>({});
+    const [voiceConfigs, setVoiceConfigs] = useState<Record<string, { voice: string, prompt: string, emotion: string, speed: string, pitch: string }>>({});
 
     // Generation State
     const [progressStats, setProgressStats] = useState({ status: '', percent: 0, currentChunk: 0, totalChunks: 0 });
@@ -377,7 +377,10 @@ export default function App() {
                 if (!newConfigs[char]) {
                     newConfigs[char] = {
                         voice: GEMINI_VOICES[index % GEMINI_VOICES.length].id,
-                        prompt: ''
+                        prompt: '',
+                        emotion: 'Neutre',
+                        speed: 'medium',
+                        pitch: 'default'
                     };
                     updated = true;
                 }
@@ -446,11 +449,12 @@ export default function App() {
 
     // Resolve locked voice name for a character
     const getLockedVoice = (character: string): string => {
-        const charLower = character.toLowerCase();
-        if (charLower.includes('maya') || character === characters[0]) return 'Aoede';
-        if (charLower.includes('leo') || character === characters[1]) return 'Puck';
         const config = voiceConfigs[character];
-        return config ? config.voice : GEMINI_VOICES[0].id;
+        if (config && config.voice) return config.voice;
+        const charLower = character.toLowerCase();
+        if (charLower.includes('maya')) return 'Aoede';
+        if (charLower.includes('leo') || charLower.includes('léo')) return 'Puck';
+        return GEMINI_VOICES[0].id;
     };
 
     // Pre-process text before TTS to remove stage directions like (Rire), (Sourire)
@@ -461,20 +465,24 @@ export default function App() {
         return cleaned.replace(/\s{2,}/g, ' ').trim();
     };
 
-    // Build systemInstruction text combining both speaker personas
-    const buildSystemInstruction = (): string => {
-        return "Read this podcast dialogue naturally and conversationally.";
+    // SSML Wrapper
+    const wrapWithSSML = (text: string, config: any): string => {
+        if (!config || (config.speed === 'medium' && config.pitch === 'default')) {
+            return text;
+        }
+        return `<speak><prosody rate="${config.speed}" pitch="${config.pitch}">${text}</prosody></speak>`;
     };
 
     // Single-speaker TTS for voice preview tests
     const callGeminiSingleTTS = async (character: string, textToSpeak: string, targetModel = selectedModel) => {
         const voiceName = getLockedVoice(character);
-        const sysText = "Read this podcast dialogue naturally and conversationally.";
+        const config = voiceConfigs[character] || { emotion: 'Neutre', speed: 'medium', pitch: 'default', prompt: '' };
 
-        const promptText = `Instructions: ${sysText}\n\nText: ${cleanTextForTTS(textToSpeak)}`;
+        const cleanedText = cleanTextForTTS(textToSpeak);
+        const ssmlText = wrapWithSSML(cleanedText, config);
 
         const payload = {
-            contents: [{ parts: [{ text: promptText }] }],
+            contents: [{ parts: [{ text: ssmlText }] }],
             generationConfig: {
                 responseModalities: ["AUDIO"],
                 speechConfig: {
@@ -505,43 +513,71 @@ export default function App() {
         return base64ToArrayBuffer(audioBase64);
     };
 
-    // Smart chunk TTS: multi-speaker with locked voices
+    // Smart chunk TTS: multi-speaker or single-speaker with locked voices
     const callGeminiChunkTTS = async (chunkBlocks: {speaker: string; text: string}[], allDetected: string[], targetModel = selectedModel) => {
-        const chunkText = chunkBlocks.map(b => `${b.speaker}: ${cleanTextForTTS(b.text)}`).join('\n');
-
-        // Collect unique speakers in this chunk
         const uniqueSpeakers = [...new Set(chunkBlocks.map(b => b.speaker))];
-        // Ensure we always have at least 2 speakers for multiSpeakerVoiceConfig
-        let finalSpeakers = [...uniqueSpeakers];
-        if (finalSpeakers.length < 2) {
-            const missing = allDetected.find(s => !finalSpeakers.includes(s));
-            if (missing) finalSpeakers.push(missing);
-            else finalSpeakers.push(finalSpeakers[0] === (characters[0] || 'Maya') ? (characters[1] || 'Leo') : (characters[0] || 'Maya'));
-        }
-        finalSpeakers = finalSpeakers.slice(0, 2);
 
-        const speakerVoiceConfigs = finalSpeakers.map(speaker => ({
-            speaker,
-            voiceConfig: {
-                prebuiltVoiceConfig: {
-                    voiceName: getLockedVoice(speaker)
-                }
-            }
-        }));
+        let payload: any;
 
-        const promptText = `${buildSystemInstruction()}\n\nDialogue:\n${chunkText}`;
+        if (uniqueSpeakers.length === 1) {
+            // Single speaker optimization
+            const singleSpeaker = uniqueSpeakers[0];
+            const voiceName = getLockedVoice(singleSpeaker);
+            const chunkText = chunkBlocks.map(b => {
+                const config = voiceConfigs[b.speaker] || { emotion: 'Neutre', speed: 'medium', pitch: 'default' };
+                const cleaned = cleanTextForTTS(b.text);
+                return wrapWithSSML(cleaned, config);
+            }).join('\n');
 
-        const payload = {
-            contents: [{ parts: [{ text: promptText }] }],
-            generationConfig: {
-                responseModalities: ["AUDIO"],
-                speechConfig: {
-                    multiSpeakerVoiceConfig: {
-                        speakerVoiceConfigs
+            payload = {
+                contents: [{ parts: [{ text: chunkText }] }],
+                generationConfig: {
+                    responseModalities: ["AUDIO"],
+                    speechConfig: {
+                        voiceConfig: {
+                            prebuiltVoiceConfig: { voiceName }
+                        }
                     }
                 }
+            };
+        } else {
+            // Multi-speaker chunk
+            const chunkText = chunkBlocks.map(b => {
+                const config = voiceConfigs[b.speaker] || { emotion: 'Neutre', speed: 'medium', pitch: 'default' };
+                const cleaned = cleanTextForTTS(b.text);
+                const wrapped = wrapWithSSML(cleaned, config);
+                return `${b.speaker}: ${wrapped}`;
+            }).join('\n');
+
+            let finalSpeakers = [...uniqueSpeakers];
+            if (finalSpeakers.length < 2) {
+                const missing = allDetected.find(s => !finalSpeakers.includes(s));
+                if (missing) finalSpeakers.push(missing);
+                else finalSpeakers.push(finalSpeakers[0] === (characters[0] || 'Maya') ? (characters[1] || 'Leo') : (characters[0] || 'Maya'));
             }
-        };
+            finalSpeakers = finalSpeakers.slice(0, 2);
+
+            const speakerVoiceConfigs = finalSpeakers.map(speaker => ({
+                speaker,
+                voiceConfig: {
+                    prebuiltVoiceConfig: {
+                        voiceName: getLockedVoice(speaker)
+                    }
+                }
+            }));
+
+            payload = {
+                contents: [{ parts: [{ text: chunkText }] }],
+                generationConfig: {
+                    responseModalities: ["AUDIO"],
+                    speechConfig: {
+                        multiSpeakerVoiceConfig: {
+                            speakerVoiceConfigs
+                        }
+                    }
+                }
+            };
+        }
 
         const urlModel = targetModel.startsWith('models/') ? targetModel : `models/${targetModel}`;
         const url = `https://generativelanguage.googleapis.com/v1beta/${urlModel}:generateContent?key=${activeApiKey}`;
@@ -848,7 +884,7 @@ Rules:
         };
 
         try {
-            const textModel = 'gemini-2.5-flash';
+            const textModel = 'gemini-3.6-flash';
             const url = `https://generativelanguage.googleapis.com/v1beta/models/${textModel}:generateContent?key=${activeApiKey}`;
             const response = await fetch(url, {
                 method: 'POST',
@@ -1159,7 +1195,7 @@ Rules:
                         </div>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             {characters.map((char, charIdx) => {
-                                const config = voiceConfigs[char] || { voice: GEMINI_VOICES[charIdx % GEMINI_VOICES.length].id, prompt: '' };
+                                const config = voiceConfigs[char] || { voice: GEMINI_VOICES[charIdx % GEMINI_VOICES.length].id, prompt: '', emotion: 'Neutre', speed: 'medium', pitch: 'default' };
                                 const isTesting = previewingChar === char;
                                 
                                 return (
@@ -1199,13 +1235,58 @@ Rules:
                                                 </select>
                                             </div>
 
+                                            <div className="grid grid-cols-2 gap-2">
+                                                <div className="flex flex-col gap-1">
+                                                    <label className="text-[11px] font-medium text-zinc-500">Émotion</label>
+                                                    <select 
+                                                        value={config.emotion || 'Neutre'}
+                                                        onChange={(e) => setVoiceConfigs(p => ({...p, [char]: {...p[char], emotion: e.target.value}}))}
+                                                        className="w-full bg-[#111113] border border-zinc-800 text-xs rounded-lg p-2.5 text-zinc-200 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer"
+                                                    >
+                                                        <option value="Neutre">Neutre</option>
+                                                        <option value="Enthusiastic">Enthousiaste</option>
+                                                        <option value="Calm">Calme</option>
+                                                        <option value="Professional">Professionnel</option>
+                                                        <option value="Dramatic">Dramatique</option>
+                                                    </select>
+                                                </div>
+                                                <div className="flex flex-col gap-1">
+                                                    <label className="text-[11px] font-medium text-zinc-500">Vitesse</label>
+                                                    <select 
+                                                        value={config.speed || 'medium'}
+                                                        onChange={(e) => setVoiceConfigs(p => ({...p, [char]: {...p[char], speed: e.target.value}}))}
+                                                        className="w-full bg-[#111113] border border-zinc-800 text-xs rounded-lg p-2.5 text-zinc-200 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer"
+                                                    >
+                                                        <option value="slow">Lent</option>
+                                                        <option value="medium">Normal</option>
+                                                        <option value="fast">Rapide</option>
+                                                        <option value="x-fast">Très rapide</option>
+                                                    </select>
+                                                </div>
+                                            </div>
+
                                             <div className="flex flex-col gap-1">
-                                                <label className="text-[11px] font-medium text-zinc-500">Instructions de style / Ton</label>
+                                                <label className="text-[11px] font-medium text-zinc-500">Pitch</label>
+                                                <select 
+                                                    value={config.pitch || 'default'}
+                                                    onChange={(e) => setVoiceConfigs(p => ({...p, [char]: {...p[char], pitch: e.target.value}}))}
+                                                    className="w-full bg-[#111113] border border-zinc-800 text-xs rounded-lg p-2.5 text-zinc-200 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer"
+                                                >
+                                                    <option value="-4st">Très grave (-4st)</option>
+                                                    <option value="-2st">Grave (-2st)</option>
+                                                    <option value="default">Normal (Défaut)</option>
+                                                    <option value="+2st">Aigu (+2st)</option>
+                                                    <option value="+4st">Très aigu (+4st)</option>
+                                                </select>
+                                            </div>
+
+                                            <div className="flex flex-col gap-1">
+                                                <label className="text-[11px] font-medium text-zinc-500">Instructions de style / Ton (Libre)</label>
                                                 <input 
                                                     type="text" 
                                                     value={config.prompt}
                                                     onChange={(e) => setVoiceConfigs(p => ({...p, [char]: {...p[char], prompt: e.target.value}}))}
-                                                    placeholder="Ex: Enthousiaste, chuchote, ton solennel..." 
+                                                    placeholder="Ex: chuchote, ton solennel..." 
                                                     className="w-full bg-[#111113] border border-zinc-800 text-xs rounded-lg p-2.5 text-zinc-200 focus:outline-none focus:border-indigo-500 transition-colors placeholder:text-zinc-600"
                                                 />
                                             </div>
