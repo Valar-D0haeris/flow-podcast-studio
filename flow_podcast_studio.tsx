@@ -298,7 +298,8 @@ export default function App() {
     const [isPaused, setIsPaused] = useState(false);
     const isPausedRef = useRef(false);
     const isCancelledRef = useRef(false);
-    const [partialAudioUrl, setPartialAudioUrl] = useState(null);
+    const [partialAudioUrl, setPartialAudioUrl] = useState<string | null>(null);
+    const [partialAudioBlob, setPartialAudioBlob] = useState<Blob | null>(null);
     
     // Character Detection State
     const [characters, setCharacters] = useState<string[]>([]);
@@ -309,7 +310,8 @@ export default function App() {
     // Generation State
     const [progressStats, setProgressStats] = useState({ status: '', percent: 0, currentChunk: 0, totalChunks: 0 });
     const [errorMsg, setErrorMsg] = useState(null);
-    const [audioUrl, setAudioUrl] = useState(null);
+    const [audioUrl, setAudioUrl] = useState<string | null>(null);
+    const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
     
     // Preview Audio State
     const [previewingChar, setPreviewingChar] = useState(null);
@@ -389,10 +391,36 @@ export default function App() {
         });
     }, [script]);
 
-    const estimateDuration = (text) => {
-        const words = text.trim().split(/\s+/).filter(w => w.length > 0).length;
-        const seconds = Math.round((words / 130) * 60);
-        return { words, minutes: Math.floor(seconds / 60), seconds: seconds % 60 };
+    // Realistic TTS Speech Cadence Estimator (Gemini TTS: ~205 spoken words/min + 350ms pause per speaker turn)
+    const estimateDuration = (text: string) => {
+        if (!text || text.trim().length === 0) {
+            return { words: 0, minutes: 0, seconds: 0, totalSeconds: 0 };
+        }
+
+        const { blocks } = parseScriptToBlocks(text);
+        
+        let totalSpokenWords = 0;
+        blocks.forEach(b => {
+            const cleaned = cleanTextForTTS(b.text);
+            const words = cleaned.trim().split(/\s+/).filter(w => w.length > 0);
+            totalSpokenWords += words.length;
+        });
+
+        if (blocks.length === 0) {
+            const cleaned = cleanTextForTTS(text);
+            const words = cleaned.trim().split(/\s+/).filter(w => w.length > 0);
+            totalSpokenWords = words.length;
+        }
+
+        // Gemini TTS French cadence: ~205 words/min (~3.41 words/sec) + 0.35s silence between dialogue turns
+        const speechSeconds = (totalSpokenWords / 205) * 60;
+        const pauseSeconds = Math.max(0, blocks.length - 1) * 0.35;
+        const totalSeconds = Math.round(speechSeconds + pauseSeconds);
+
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = totalSeconds % 60;
+
+        return { words: totalSpokenWords, minutes, seconds, totalSeconds };
     };
     
     const stats = estimateDuration(script);
@@ -668,27 +696,16 @@ export default function App() {
             }
         }
 
-        const mergedPcm = new Int16Array(totalSamples);
-        let offset = 0;
-        for (let i = 0; i < viewArrays.length; i++) {
-            mergedPcm.set(viewArrays[i], offset);
-            offset += viewArrays[i].length;
-            if (i < viewArrays.length - 1) {
-                mergedPcm.set(silenceBuffer, offset);
-                offset += silenceSamples;
-            }
-        }
-
         const sampleRate = 24000;
         const numChannels = 1;
         const bitsPerSample = 16;
         const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
         const blockAlign = (numChannels * bitsPerSample) / 8;
-        const dataSize = mergedPcm.length * 2;
+        const dataSize = totalSamples * 2;
         const chunkSize = 36 + dataSize;
 
-        const wavHeader = new ArrayBuffer(44);
-        const headerView = new DataView(wavHeader);
+        const wavBuffer = new ArrayBuffer(44 + dataSize);
+        const headerView = new DataView(wavBuffer);
 
         const writeString = (v, off, str) => {
             for (let i = 0; i < str.length; i++) v.setUint8(off + i, str.charCodeAt(i));
@@ -708,8 +725,21 @@ export default function App() {
         writeString(headerView, 36, 'data');
         headerView.setUint32(40, dataSize, true);
 
-        const wavBlob = new Blob([wavHeader, mergedPcm], { type: 'audio/wav' });
-        return URL.createObjectURL(wavBlob);
+        // Copy audio data directly into the WAV ArrayBuffer
+        const audioDataView = new Int16Array(wavBuffer, 44);
+        let offset = 0;
+        for (let i = 0; i < viewArrays.length; i++) {
+            audioDataView.set(viewArrays[i], offset);
+            offset += viewArrays[i].length;
+            if (i < viewArrays.length - 1) {
+                audioDataView.set(silenceBuffer, offset);
+                offset += silenceSamples;
+            }
+        }
+
+        const blob = new Blob([wavBuffer], { type: 'audio/wav' });
+        const url = URL.createObjectURL(blob);
+        return { blob, url };
     };
 
     const handleGenerate = async () => {
@@ -724,10 +754,12 @@ export default function App() {
         if (audioUrl) {
             URL.revokeObjectURL(audioUrl);
             setAudioUrl(null);
+            setAudioBlob(null);
         }
         if (partialAudioUrl) {
             URL.revokeObjectURL(partialAudioUrl);
             setPartialAudioUrl(null);
+            setPartialAudioBlob(null);
         }
         
         const { blocks, detectedChars } = parseScriptToBlocks(script);
@@ -802,9 +834,12 @@ export default function App() {
                         audioBuffers[idx] = audioData;
                         success = true;
                         
-                        // Update partial audio URL for safety
-                        const currentPartialUrl = buildWavBlobFromBuffers(audioBuffers);
-                        if (currentPartialUrl) setPartialAudioUrl(currentPartialUrl);
+                        // Update partial audio URL and blob for safety
+                        const partialResult = buildWavBlobFromBuffers(audioBuffers);
+                        if (partialResult) {
+                            setPartialAudioUrl(partialResult.url);
+                            setPartialAudioBlob(partialResult.blob);
+                        }
 
                         // Anti-Quota Delay between chunks (Default: 3.5s)
                         if (antiQuotaMode && idx < chunks.length - 1) {
@@ -842,9 +877,10 @@ export default function App() {
 
             if (!isCancelledRef.current) {
                 setProgressStats({ status: 'Assemblage final du podcast WAV...', percent: 95, currentChunk: chunks.length, totalChunks: chunks.length });
-                const finalUrl = buildWavBlobFromBuffers(audioBuffers);
-                if (finalUrl) {
-                    setAudioUrl(finalUrl);
+                const finalResult = buildWavBlobFromBuffers(audioBuffers);
+                if (finalResult) {
+                    setAudioUrl(finalResult.url);
+                    setAudioBlob(finalResult.blob);
                     setViewMode("preview");
                 }
             }
@@ -853,7 +889,10 @@ export default function App() {
             setErrorMsg(err.message || "Une erreur est survenue lors de la génération.");
             // Keep partial audio URL available if generated
             const fallbackPartial = buildWavBlobFromBuffers(audioBuffers);
-            if (fallbackPartial) setPartialAudioUrl(fallbackPartial);
+            if (fallbackPartial) {
+                setPartialAudioUrl(fallbackPartial.url);
+                setPartialAudioBlob(fallbackPartial.blob);
+            }
         } finally {
             setIsGenerating(false);
         }
@@ -922,14 +961,32 @@ Rules:
         reader.readAsText(file);
     };
 
-    const handleDownloadWav = () => {
-        if (!audioUrl) return;
+    const handleDownloadWav = (blobToDownload?: Blob | null, customFilename?: string) => {
+        const targetBlob = blobToDownload || audioBlob;
+        if (!targetBlob) return;
+
+        // Generate clean readable filename
+        const firstLine = script.split('\n').find(l => l.trim().length > 0) || "";
+        const cleanTitle = firstLine
+            .replace(/^[^:]+:\s*/, '')
+            .replace(/[^a-zA-Z0-9\u00C0-\u017F\s_-]/g, '')
+            .trim()
+            .slice(0, 30)
+            .replace(/\s+/g, '_') || "Studio_Export";
+        const dateStr = new Date().toISOString().slice(0, 10);
+        const filename = customFilename || `Flow_Podcast_${cleanTitle}_${dateStr}.wav`;
+
+        const url = URL.createObjectURL(targetBlob);
         const a = document.createElement('a');
-        a.href = audioUrl;
-        a.download = `Flow_Podcast_Export.wav`;
+        a.style.display = 'none';
+        a.href = url;
+        a.download = filename;
         document.body.appendChild(a);
         a.click();
-        document.body.removeChild(a);
+        setTimeout(() => {
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }, 1500);
     };
 
     return (
@@ -1443,13 +1500,13 @@ Rules:
                                         <Download className="w-3.5 h-3.5 text-indigo-400" />
                                         Audio partiel disponible
                                     </span>
-                                    <a 
-                                        href={partialAudioUrl}
-                                        download={`Flow_Podcast_Partiel.wav`}
-                                        className="px-2.5 py-1 bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-500/40 text-indigo-300 text-xs font-medium rounded transition-colors"
+                                    <button 
+                                        onClick={() => handleDownloadWav(partialAudioBlob, `Flow_Podcast_Partiel_${new Date().toISOString().slice(0, 10)}.wav`)}
+                                        className="px-2.5 py-1 bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-500/40 text-indigo-300 text-xs font-medium rounded transition-colors flex items-center gap-1.5"
                                     >
+                                        <Download className="w-3.5 h-3.5" />
                                         Télécharger .wav partiel
-                                    </a>
+                                    </button>
                                 </div>
                             )}
                         </div>
