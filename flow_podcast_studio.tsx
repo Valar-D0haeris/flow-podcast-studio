@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { upload } from '@vercel/blob/client';
 import { 
     Play, Pause, Download, Clock, FileText, Loader2, AlertCircle, Volume2, VolumeX, 
     Trash2, User, Wand2, RefreshCw, Edit3, MessageSquare, Key, Sparkles, Copy, 
@@ -509,39 +510,39 @@ export default function App() {
         setInputPassword('');
     };
 
-    // Upload WAV blob to Vercel Blob via /api/blob/upload
+    // Direct Client Upload to Vercel Blob (bypasses 4.5MB Serverless Function limits, supports 500MB+ for 40+ min podcasts)
     const uploadToVercelBlob = async (wavBlob: Blob, filename: string, durationText: string) => {
         setIsUploading(true);
         setUploadError(null);
         try {
-            const scriptExcerpt = btoa(unescape(encodeURIComponent(script.slice(0, 300))));
-            const scriptFull = btoa(unescape(encodeURIComponent(script.slice(0, 8000))));
-            const res = await fetch('/api/blob/upload', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'audio/wav',
-                    'x-filename': filename,
-                    'x-duration': durationText,
-                    'x-script-excerpt': scriptExcerpt,
-                    'x-script-full': scriptFull,
-                },
-                body: wavBlob,
+            const blobResult = await upload(filename, wavBlob, {
+                access: 'public',
+                handleUploadUrl: '/api/blob/upload',
             });
 
-            if (!res.ok) {
-                const errData = await res.json().catch(() => ({}));
-                throw new Error(errData.error || `Upload failed (${res.status})`);
-            }
+            setBlobUrl(blobResult.url);
+            setBlobDownloadUrl(blobResult.downloadUrl || blobResult.url);
 
-            const data = await res.json();
-            setBlobUrl(data.url);
-            setBlobDownloadUrl(data.downloadUrl);
+            // Record into Postgres History via lightweight JSON request
+            await fetch('/api/history', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    filename,
+                    blob_url: blobResult.url,
+                    download_url: blobResult.downloadUrl || blobResult.url,
+                    duration_text: durationText,
+                    script: script,
+                    script_excerpt: script.slice(0, 300)
+                })
+            });
+
             // Refresh history after successful upload
             await fetchHistory();
-            return data;
+            return blobResult;
         } catch (err: any) {
             console.error('[uploadToVercelBlob] error:', err);
-            setUploadError(err.message);
+            setUploadError(err.message || 'Erreur lors de la sauvegarde cloud');
             return null;
         } finally {
             setIsUploading(false);

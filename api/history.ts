@@ -40,7 +40,7 @@ const CREATE_TABLE = `
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -75,6 +75,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json({ success: true, deletedId: id });
     } catch (err: any) {
       console.error('[history-delete] error:', err);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+  // POST: create a new generation history entry
+  if (req.method === 'POST') {
+    try {
+      await pool.query(CREATE_TABLE);
+      const { filename, blob_url, download_url, duration_text, script, script_excerpt } = req.body || {};
+      if (!filename || !blob_url) {
+        return res.status(400).json({ error: 'Missing filename or blob_url' });
+      }
+      const finalExcerpt = script_excerpt || (script ? script.slice(0, 500) : '');
+      const result = await pool.query(
+        'INSERT INTO generations (filename, blob_url, download_url, duration_text, script_excerpt, script) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+        [filename, blob_url, download_url || blob_url, duration_text || '', finalExcerpt, script || '']
+      );
+      return res.status(200).json({ success: true, id: result.rows[0]?.id });
+    } catch (err: any) {
+      console.error('[history-post] error:', err);
       return res.status(500).json({ error: err.message });
     }
   }
