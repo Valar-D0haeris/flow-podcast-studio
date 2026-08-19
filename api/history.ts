@@ -31,8 +31,10 @@ const CREATE_TABLE = `
     blob_url      TEXT NOT NULL,
     download_url  TEXT NOT NULL,
     duration_text TEXT,
-    script_excerpt TEXT
+    script_excerpt TEXT,
+    script        TEXT
   );
+  ALTER TABLE generations ADD COLUMN IF NOT EXISTS script TEXT;
   CREATE INDEX IF NOT EXISTS idx_generations_created_at ON generations (created_at DESC);
 `;
 
@@ -83,7 +85,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       await pool.query(CREATE_TABLE);
 
       const result = await pool.query(
-        'SELECT id, created_at, filename, blob_url, download_url, duration_text, script_excerpt FROM generations ORDER BY created_at DESC LIMIT 50'
+        'SELECT id, created_at, filename, blob_url, download_url, duration_text, script_excerpt, script FROM generations ORDER BY created_at DESC LIMIT 50'
       );
 
       return res.status(200).json({

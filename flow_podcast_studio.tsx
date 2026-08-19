@@ -385,10 +385,18 @@ export default function App() {
     const [isUploading, setIsUploading] = useState(false);
     const [uploadError, setUploadError] = useState<string | null>(null);
 
-    // History State
+    // History State & Unread Badge (WhatsApp style)
     const [historyItems, setHistoryItems] = useState<any[]>([]);
     const [isLoadingHistory, setIsLoadingHistory] = useState(false);
     const [activeTab, setActiveTab] = useState<'studio' | 'history'>('studio');
+    const [lastSeenHistoryCount, setLastSeenHistoryCount] = useState<number>(() => {
+        try {
+            return Number(localStorage.getItem('flow_podcast_last_seen_history_count') || '0');
+        } catch {
+            return 0;
+        }
+    });
+    const unreadHistoryCount = Math.max(0, historyItems.length - lastSeenHistoryCount);
     
     // Preview Audio State
     const [previewingChar, setPreviewingChar] = useState(null);
@@ -450,6 +458,23 @@ export default function App() {
                 setPlayingHistoryId(null);
             };
         }
+    };
+
+    // Restore full studio session from history ("Embobiner")
+    const handleRestoreSession = (item: any) => {
+        if (item.script && item.script.trim().length > 0) {
+            setScript(item.script);
+        } else if (item.script_excerpt && item.script_excerpt.trim().length > 0) {
+            setScript(item.script_excerpt);
+        }
+        if (item.blob_url) {
+            setAudioUrl(item.blob_url);
+            setBlobUrl(item.blob_url);
+            setBlobDownloadUrl(item.download_url || item.blob_url);
+        }
+        setActiveTab('studio');
+        setViewMode('preview');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
     };
 
     // Update and persist voice configs
@@ -520,6 +545,7 @@ export default function App() {
         setUploadError(null);
         try {
             const scriptExcerpt = btoa(unescape(encodeURIComponent(script.slice(0, 300))));
+            const scriptFull = btoa(unescape(encodeURIComponent(script.slice(0, 8000))));
             const res = await fetch('/api/blob/upload', {
                 method: 'POST',
                 headers: {
@@ -527,6 +553,7 @@ export default function App() {
                     'x-filename': filename,
                     'x-duration': durationText,
                     'x-script-excerpt': scriptExcerpt,
+                    'x-script-full': scriptFull,
                 },
                 body: wavBlob,
             });
@@ -1364,22 +1391,21 @@ Rules:
 
                     {/* API KEY & MODEL CONFIG BADGES */}
                     <div className="flex items-center gap-2">
-                        {/* Model Selector Dropdown */}
-                        <div className="flex items-center gap-1.5 bg-[#1a1a1c] border border-zinc-800 px-2.5 py-1.5 rounded-lg text-xs font-medium text-zinc-300">
+                        {/* Direct Interactive Model Selector Dropdown */}
+                        <div className="flex items-center gap-1.5 bg-[#1a1a1c] hover:bg-[#222226] border border-zinc-800 hover:border-indigo-500/40 px-2.5 py-1.5 rounded-lg text-xs font-medium text-zinc-300 transition-colors shadow-sm">
                             <Cpu className="w-3.5 h-3.5 text-indigo-400 flex-shrink-0" />
-                            <input 
-                                type="text"
-                                list="gemini-models-list"
+                            <select 
                                 value={selectedModel}
                                 onChange={(e) => handleSaveModel(e.target.value)}
-                                className="bg-transparent text-xs text-zinc-200 focus:outline-none placeholder-zinc-600 w-40"
-                                placeholder="ex: models/gemini-..."
-                            />
-                            <datalist id="gemini-models-list">
+                                className="bg-transparent text-xs text-zinc-200 focus:outline-none cursor-pointer pr-1 font-medium"
+                                title="Sélectionner le modèle TTS Gemini"
+                            >
                                 {GEMINI_MODELS.map(m => (
-                                    <option key={m.id} value={m.id}>{m.name}</option>
+                                    <option key={m.id} value={m.id} className="bg-[#1a1a1c] text-zinc-200">
+                                        {m.name} ({m.tag})
+                                    </option>
                                 ))}
-                            </datalist>
+                            </select>
                         </div>
 
                         <button 
@@ -1433,14 +1459,27 @@ Rules:
                         Studio
                     </button>
                     <button
-                        onClick={() => { setActiveTab('history'); fetchHistory(); }}
-                        className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${activeTab === 'history' ? 'bg-indigo-500 text-white shadow-sm shadow-indigo-500/30' : 'text-zinc-400 hover:text-zinc-200'}`}
+                        onClick={() => { 
+                            setActiveTab('history');
+                            setLastSeenHistoryCount(historyItems.length);
+                            try {
+                                localStorage.setItem('flow_podcast_last_seen_history_count', String(historyItems.length));
+                            } catch {}
+                            fetchHistory(); 
+                        }}
+                        className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all relative ${activeTab === 'history' ? 'bg-indigo-500 text-white shadow-sm shadow-indigo-500/30' : 'text-zinc-400 hover:text-zinc-200'}`}
                     >
                         <History className="w-3.5 h-3.5" />
                         Historique
-                        {historyItems.length > 0 && (
-                            <span className="text-[10px] bg-indigo-400/20 text-indigo-300 px-1.5 py-0.5 rounded-full">{historyItems.length}</span>
-                        )}
+                        {unreadHistoryCount > 0 && activeTab !== 'history' ? (
+                            <span className="text-[10px] font-bold bg-rose-500 text-white px-1.5 py-0.2 rounded-full animate-pulse shadow-sm shadow-rose-500/40">
+                                {unreadHistoryCount}
+                            </span>
+                        ) : historyItems.length > 0 ? (
+                            <span className="text-[10px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded-full">
+                                {historyItems.length}
+                            </span>
+                        ) : null}
                     </button>
                 </div>
 
@@ -2063,7 +2102,15 @@ Rules:
                                                     )}
                                                 </div>
                                             </div>
-                                            <div className="flex items-center gap-2 flex-shrink-0">
+                                            <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
+                                                <button
+                                                    onClick={() => handleRestoreSession(item)}
+                                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-500/15 hover:bg-indigo-500/30 border border-indigo-500/30 text-indigo-300 hover:text-white text-xs font-medium rounded-lg transition-all"
+                                                    title="Restaurer le script et la piste audio dans le Studio"
+                                                >
+                                                    <RotateCcw className="w-3.5 h-3.5" />
+                                                    Charger dans le Studio
+                                                </button>
                                                 <button
                                                     onClick={() => togglePlayHistory(item.id, item.blob_url)}
                                                     className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all shadow-sm ${

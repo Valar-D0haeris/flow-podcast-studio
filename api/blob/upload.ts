@@ -38,8 +38,10 @@ const CREATE_TABLE = `
     blob_url      TEXT NOT NULL,
     download_url  TEXT NOT NULL,
     duration_text TEXT,
-    script_excerpt TEXT
+    script_excerpt TEXT,
+    script        TEXT
   );
+  ALTER TABLE generations ADD COLUMN IF NOT EXISTS script TEXT;
   CREATE INDEX IF NOT EXISTS idx_generations_created_at ON generations (created_at DESC);
 `;
 
@@ -86,10 +88,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const cleanFilename = rawFilename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 100);
     const durationText = ((req.headers['x-duration'] as string) || '').slice(0, 30);
     const scriptExcerptB64 = (req.headers['x-script-excerpt'] as string) || '';
+    const scriptFullB64 = (req.headers['x-script-full'] as string) || '';
     
     let scriptExcerpt = '';
+    let scriptFull = '';
     try {
-      scriptExcerpt = Buffer.from(scriptExcerptB64, 'base64').toString('utf8').slice(0, 500);
+      if (scriptExcerptB64) {
+        scriptExcerpt = Buffer.from(scriptExcerptB64, 'base64').toString('utf8').slice(0, 500);
+      }
+      if (scriptFullB64) {
+        scriptFull = Buffer.from(scriptFullB64, 'base64').toString('utf8');
+      } else {
+        scriptFull = scriptExcerpt;
+      }
     } catch {}
 
     const blob = await put(cleanFilename, body, {
@@ -103,8 +114,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       try {
         await ensureTable();
         const result = await pool.query(
-          'INSERT INTO generations (filename, blob_url, download_url, duration_text, script_excerpt) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-          [cleanFilename, blob.url, blob.downloadUrl, durationText, scriptExcerpt]
+          'INSERT INTO generations (filename, blob_url, download_url, duration_text, script_excerpt, script) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+          [cleanFilename, blob.url, blob.downloadUrl, durationText, scriptExcerpt, scriptFull]
         );
         dbId = result.rows[0]?.id ?? null;
       } catch (dbErr) {
