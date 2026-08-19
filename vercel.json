@@ -6,6 +6,14 @@
     }
   ],
   "functions": {
+    "api/auth.ts": {
+      "maxDuration": 10,
+      "memory": 256
+    },
+    "api/jobs.ts": {
+      "maxDuration": 10,
+      "memory": 256
+    },
     "api/history.ts": {
       "maxDuration": 10,
       "memory": 256

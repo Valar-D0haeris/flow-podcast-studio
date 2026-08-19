@@ -5,7 +5,7 @@ import {
     Upload, Check, RotateCcw, FastForward, Settings, HelpCircle, X, Cpu,
     Activity, CheckCircle2, XCircle, AlertTriangle, Gauge, Zap, ShieldCheck,
     PauseOctagon, PlaySquare, StopCircle, AlertOctagon, Sliders, Shield,
-    History, Cloud, ExternalLink
+    History, Cloud, ExternalLink, Lock, Unlock, Radio, LogOut, Smartphone
 } from 'lucide-react';
 
 const DEFAULT_API_KEY = (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
@@ -317,6 +317,12 @@ const AudioPlayer = ({ src, onDownload }) => {
 };
 
 export default function App() {
+    // ── AUTHENTICATION STATE ──
+    const [authToken, setAuthToken] = useState<string | null>(() => localStorage.getItem('flow_podcast_auth_token'));
+    const [inputPassword, setInputPassword] = useState('');
+    const [authError, setAuthError] = useState<string | null>(null);
+    const [isLoggingIn, setIsLoggingIn] = useState(false);
+
     const [script, setScript] = useState("");
     const [viewMode, setViewMode] = useState("editor"); // "editor" or "preview"
     
@@ -334,13 +340,21 @@ export default function App() {
     const [chunkSizeLimit, setChunkSizeLimit] = useState(1200); // 1200 chars max per segment
     const [safetyDelayMs, setSafetyDelayMs] = useState(3000); // 3 sec delay between segments
     
-    // Generation Control States
+    // Generation Control States & Checkpoint Engine
     const [isGenerating, setIsGenerating] = useState(false);
     const [isPaused, setIsPaused] = useState(false);
     const isPausedRef = useRef(false);
     const isCancelledRef = useRef(false);
     const [partialAudioUrl, setPartialAudioUrl] = useState<string | null>(null);
     const [partialAudioBlob, setPartialAudioBlob] = useState<Blob | null>(null);
+
+    // Checkpoint & Token Saver State
+    const [cachedBuffers, setCachedBuffers] = useState<ArrayBuffer[]>([]);
+    const [cachedScript, setCachedScript] = useState<string>('');
+    const [resumableChunkIdx, setResumableChunkIdx] = useState<number>(0);
+
+    // Cross-Device Sync State (PC ↔ Mobile)
+    const [remoteJob, setRemoteJob] = useState<any>(null);
     
     // Character Detection State
     const [characters, setCharacters] = useState<string[]>([]);
@@ -457,9 +471,48 @@ export default function App() {
         });
     };
 
+    // Poll /api/jobs every 3.5 seconds for cross-device live sync
     useEffect(() => {
-        fetchHistory();
-    }, []);
+        if (!authToken) return;
+        const interval = setInterval(async () => {
+            try {
+                const res = await fetch('/api/jobs');
+                if (res.ok) {
+                    const data = await res.json();
+                    setRemoteJob(data.job || null);
+                }
+            } catch {}
+        }, 3500);
+        return () => clearInterval(interval);
+    }, [authToken]);
+
+    const handleLogin = async (e?: React.FormEvent) => {
+        if (e) e.preventDefault();
+        setIsLoggingIn(true);
+        setAuthError(null);
+        try {
+            const res = await fetch('/api/auth', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password: inputPassword })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Code d\'accès incorrect');
+            localStorage.setItem('flow_podcast_auth_token', data.token);
+            setAuthToken(data.token);
+            fetchHistory();
+        } catch (err: any) {
+            setAuthError(err.message || 'Erreur de connexion');
+        } finally {
+            setIsLoggingIn(false);
+        }
+    };
+
+    const handleLogout = () => {
+        localStorage.removeItem('flow_podcast_auth_token');
+        setAuthToken(null);
+        setInputPassword('');
+    };
 
     // Upload WAV blob to Vercel Blob via /api/blob/upload
     const uploadToVercelBlob = async (wavBlob: Blob, filename: string, durationText: string) => {
@@ -906,7 +959,7 @@ export default function App() {
         return { blob, url };
     };
 
-    const handleGenerate = async () => {
+    const handleGenerate = async (startFromChunk = 0) => {
         if (script.trim().length === 0) return;
         
         setIsGenerating(true);
@@ -918,24 +971,24 @@ export default function App() {
         setBlobDownloadUrl(null);
         setUploadError(null);
         
-        if (audioUrl) {
-            URL.revokeObjectURL(audioUrl);
-            setAudioUrl(null);
-            setAudioBlob(null);
-        }
-        if (partialAudioUrl) {
-            URL.revokeObjectURL(partialAudioUrl);
-            setPartialAudioUrl(null);
-            setPartialAudioBlob(null);
+        if (startFromChunk === 0) {
+            if (audioUrl) {
+                URL.revokeObjectURL(audioUrl);
+                setAudioUrl(null);
+                setAudioBlob(null);
+            }
+            if (partialAudioUrl) {
+                URL.revokeObjectURL(partialAudioUrl);
+                setPartialAudioUrl(null);
+                setPartialAudioBlob(null);
+            }
         }
         
         const { blocks, detectedChars } = parseScriptToBlocks(script);
         
         // ── Smart Chunking Engine ──
-        // Group consecutive blocks into chunks of ~2500-3500 characters.
-        // Never split mid-sentence. Reduces a 32-min script from ~100 API calls down to 8-12.
-        const CHUNK_TARGET = 3000; // target chars per chunk
-        const CHUNK_MAX    = 3500; // hard max
+        const CHUNK_TARGET = 3000;
+        const CHUNK_MAX    = 3500;
         const chunks: {speaker: string; text: string}[][] = [];
         let currentChunk: {speaker: string; text: string}[] = [];
         let currentLen = 0;
@@ -945,7 +998,6 @@ export default function App() {
             const currentSpeakers = new Set(currentChunk.map(b => b.speaker));
             const wouldExceedTwoSpeakers = !currentSpeakers.has(block.speaker) && currentSpeakers.size >= 2;
 
-            // If adding this block would exceed the hard max OR introduce a 3rd speaker in the chunk, flush
             if ((currentLen + blockLen > CHUNK_MAX || wouldExceedTwoSpeakers) && currentChunk.length > 0) {
                 chunks.push(currentChunk);
                 currentChunk = [block];
@@ -953,7 +1005,6 @@ export default function App() {
             } else {
                 currentChunk.push(block);
                 currentLen += blockLen;
-                // If we've passed the target, flush on the next iteration
                 if (currentLen >= CHUNK_TARGET) {
                     chunks.push(currentChunk);
                     currentChunk = [];
@@ -963,12 +1014,30 @@ export default function App() {
         }
         if (currentChunk.length > 0) chunks.push(currentChunk);
 
-        setProgressStats({ status: `Initialisation du studio (${chunks.length} segments optimisés)...`, percent: 5, currentChunk: 0, totalChunks: chunks.length });
-        
-        const audioBuffers = new Array(chunks.length);
+        // Checkpoint buffer array
+        const audioBuffers = (startFromChunk > 0 && cachedBuffers.length >= startFromChunk && cachedScript === script)
+            ? [...cachedBuffers]
+            : new Array(chunks.length);
+
+        const firstLine = script.split('\n').find(l => l.trim().length > 0) || '';
+        const cleanTitle = firstLine.replace(/^[^:]+:\s*/, '').slice(0, 35) || 'Flow Podcast';
+
+        // Initial broadcast to jobs for mobile sync
+        fetch('/api/jobs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                status: 'running',
+                title: cleanTitle,
+                current_chunk: startFromChunk + 1,
+                total_chunks: chunks.length,
+                percent: Math.round((startFromChunk / chunks.length) * 100),
+                status_text: startFromChunk > 0 ? `Reprise au segment ${startFromChunk + 1} / ${chunks.length}` : `Démarrage (${chunks.length} segments)...`
+            })
+        }).catch(() => {});
 
         try {
-            for (let idx = 0; idx < chunks.length; idx++) {
+            for (let idx = startFromChunk; idx < chunks.length; idx++) {
                 if (isCancelledRef.current) break;
 
                 // Handle Pause
@@ -980,7 +1049,6 @@ export default function App() {
                 if (isCancelledRef.current) break;
 
                 const chunk = chunks[idx];
-
                 let success = false;
                 let retries = 0;
                 const modelsToTry = [selectedModel, ...GEMINI_MODELS.map(m => m.id).filter(id => id !== selectedModel)];
@@ -988,60 +1056,62 @@ export default function App() {
 
                 while (!success && retries < 5) {
                     if (isCancelledRef.current) break;
-                    
-                    const currentTargetModel = modelsToTry[modelIdx % modelsToTry.length];
-                    
                     try {
-                        const chunkChars = chunk.reduce((sum, b) => sum + b.text.length, 0);
+                        const currentModel = modelsToTry[modelIdx % modelsToTry.length];
+                        const percent = Math.round(((idx) / chunks.length) * 90) + 5;
                         setProgressStats({
-                            status: `🎙️ Generating audio batch ${idx + 1} of ${chunks.length} (~${chunkChars} chars, model: ${currentTargetModel})...`,
-                            percent: 10 + Math.floor((idx / chunks.length) * 80),
+                            status: `Synthèse segment ${idx + 1}/${chunks.length} (${currentModel.replace('gemini-', '')})...`,
+                            percent,
                             currentChunk: idx + 1,
                             totalChunks: chunks.length
                         });
 
-                        const audioData = await callGeminiChunkTTS(chunk, detectedChars, currentTargetModel);
-                        audioBuffers[idx] = audioData;
+                        const buffer = await callGeminiChunkTTS(chunk, detectedChars, currentModel);
+                        audioBuffers[idx] = buffer;
                         success = true;
-                        
-                        // Update partial audio URL and blob for safety
-                        const partialResult = buildWavBlobFromBuffers(audioBuffers);
+
+                        // Save intermediate checkpoint
+                        setCachedBuffers([...audioBuffers.slice(0, idx + 1)]);
+                        setCachedScript(script);
+                        setResumableChunkIdx(idx + 1);
+
+                        // Broadcast progress for cross-device sync
+                        fetch('/api/jobs', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                status: 'running',
+                                title: cleanTitle,
+                                current_chunk: idx + 1,
+                                total_chunks: chunks.length,
+                                percent,
+                                status_text: `Segment ${idx + 1}/${chunks.length} terminé`
+                            })
+                        }).catch(() => {});
+
+                        // Update partial audio for preview
+                        const partialResult = buildWavBlobFromBuffers(audioBuffers.slice(0, idx + 1));
                         if (partialResult) {
                             setPartialAudioUrl(partialResult.url);
                             setPartialAudioBlob(partialResult.blob);
                         }
 
-                        // Anti-Quota Delay between chunks (Default: 3.5s)
-                        if (antiQuotaMode && idx < chunks.length - 1) {
-                            const delaySec = (safetyDelayMs / 1000).toFixed(1);
-                            for (let countdown = Math.ceil(safetyDelayMs / 1000); countdown > 0; countdown--) {
-                                if (isCancelledRef.current || isPausedRef.current) break;
-                                setProgressStats(prev => ({ 
-                                    ...prev, 
-                                    status: `🛡️ Pause Anti-Quota (${countdown}s avant segment ${idx + 2}/${chunks.length})...`
-                                }));
-                                await sleep(1000);
-                            }
+                        if (idx < chunks.length - 1 && antiQuotaMode) {
+                            setProgressStats(prev => ({ ...prev, status: `🛡️ Pause de sécurité anti-quota (${(safetyDelayMs / 1000).toFixed(1)}s)...` }));
+                            await sleep(safetyDelayMs);
                         }
-                    } catch (err) {
-                        const is429 = err.message.includes("429") || err.message.includes("quota") || err.message.includes("RESOURCE_EXHAUSTED") || err.message.includes("503");
-                        if (is429) {
-                            retries++;
-                            modelIdx++; // Auto-rotate model on 429
-                            const backoffSec = Math.min(30, Math.pow(2, retries) * 3 + Math.floor(Math.random() * 2));
-                            setProgressStats(prev => ({ 
-                                ...prev, 
-                                status: `⚠️ Quota 429 atteint sur segment ${idx + 1} - Attente de ${backoffSec}s puis bascule modèle...`
-                            }));
+                    } catch (err: any) {
+                        console.warn(`Tentative ${retries + 1} échouée sur segment ${idx + 1}:`, err);
+                        retries++;
+                        modelIdx++;
+                        if (retries < 5 && !isCancelledRef.current) {
+                            const backoffSec = Math.pow(2, retries) + Math.random() * 2;
+                            setProgressStats(prev => ({ ...prev, status: `Rate limit ou erreur. Réessai dans ${backoffSec.toFixed(0)}s...` }));
                             await sleep(backoffSec * 1000);
                         } else {
                             throw err;
                         }
                     }
-                }
-
-                if (!success && !isCancelledRef.current) {
-                    throw new Error(`Échec de la génération sur le segment ${idx + 1} après 5 tentatives.`);
                 }
             }
 
@@ -1053,33 +1123,56 @@ export default function App() {
                     setAudioBlob(finalResult.blob);
                     setViewMode("preview");
 
-                    // Async upload to Vercel Blob (non-blocking for playback)
+                    // Clear checkpoint since completed
+                    setCachedBuffers([]);
+                    setResumableChunkIdx(0);
+
+                    // Async upload to Vercel Blob
                     setProgressStats(prev => ({ ...prev, status: '☁️ Sauvegarde en cours vers Vercel Blob...', percent: 98 }));
-                    const firstLine = script.split('\n').find(l => l.trim().length > 0) || '';
-                    const cleanTitle = firstLine
-                        .replace(/^[^:]+:\s*/, '')
-                        .replace(/[^a-zA-Z0-9\u00C0-\u017F\s_-]/g, '')
-                        .trim().slice(0, 30).replace(/\s+/g, '_') || 'Studio_Export';
+                    const cleanFilename = cleanTitle.replace(/[^a-zA-Z0-9\u00C0-\u017F\s_-]/g, '').trim().slice(0, 30).replace(/\s+/g, '_') || 'Studio_Export';
                     const dateStr = new Date().toISOString().slice(0, 10);
-                    const wavFilename = `Flow_Podcast_${cleanTitle}_${dateStr}.wav`;
+                    const wavFilename = `Flow_Podcast_${cleanFilename}_${dateStr}.wav`;
                     const { totalSeconds } = estimateDuration(script);
                     const mins = Math.floor(totalSeconds / 60);
                     const secs = Math.round(totalSeconds % 60);
                     const durationText = `${mins}m${secs}s`;
-                    uploadToVercelBlob(finalResult.blob, wavFilename, durationText).then(() => {
+                    uploadToVercelBlob(finalResult.blob, wavFilename, durationText).then((data) => {
                         setProgressStats(prev => ({ ...prev, status: '✅ Podcast généré et sauvegardé dans le cloud !', percent: 100 }));
+                        // Broadcast completion to all devices
+                        fetch('/api/jobs', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                status: 'completed',
+                                title: cleanTitle,
+                                current_chunk: chunks.length,
+                                total_chunks: chunks.length,
+                                percent: 100,
+                                blob_url: data?.url || null,
+                                status_text: 'Podcast terminé et sauvegardé !'
+                            })
+                        }).catch(() => {});
                     });
                 }
             }
-        } catch (err) {
+        } catch (err: any) {
             console.error("Erreur de génération :", err);
             setErrorMsg(err.message || "Une erreur est survenue lors de la génération.");
-            // Keep partial audio URL available if generated
-            const fallbackPartial = buildWavBlobFromBuffers(audioBuffers);
+            const fallbackPartial = buildWavBlobFromBuffers(audioBuffers.filter(Boolean));
             if (fallbackPartial) {
                 setPartialAudioUrl(fallbackPartial.url);
                 setPartialAudioBlob(fallbackPartial.blob);
             }
+            fetch('/api/jobs', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    status: 'error',
+                    title: cleanTitle,
+                    error: err.message,
+                    status_text: `Interruption : ${err.message}`
+                })
+            }).catch(() => {});
         } finally {
             setIsGenerating(false);
         }
@@ -1203,6 +1296,54 @@ Rules:
         }, 1500);
     };
 
+    // ── AUTHENTICATION GATE ──
+    if (!authToken) {
+        return (
+            <div className="min-h-screen bg-[#111113] text-zinc-300 font-sans p-4 flex items-center justify-center selection:bg-indigo-500/30">
+                <div className="w-full max-w-md bg-[#1a1a1c] border border-zinc-800 rounded-3xl p-8 shadow-2xl flex flex-col gap-6 animate-in fade-in zoom-in-95">
+                    <div className="flex flex-col items-center text-center gap-3">
+                        <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center text-white shadow-xl shadow-indigo-500/25">
+                            <Lock className="w-7 h-7" />
+                        </div>
+                        <div>
+                            <h1 className="text-xl font-bold text-white tracking-tight">Flow Podcast Studio Pro</h1>
+                            <p className="text-xs text-zinc-500 mt-1">Accès sécurisé (PC & Smartphone)</p>
+                        </div>
+                    </div>
+
+                    <form onSubmit={handleLogin} className="flex flex-col gap-4">
+                        <div className="flex flex-col gap-1.5">
+                            <label className="text-xs font-semibold text-zinc-400">Code d'accès maître :</label>
+                            <input
+                                type="password"
+                                value={inputPassword}
+                                onChange={(e) => setInputPassword(e.target.value)}
+                                placeholder="Entrez le mot de passe maître..."
+                                className="w-full bg-[#111113] border border-zinc-700/80 rounded-xl px-4 py-3 text-sm text-zinc-200 focus:outline-none focus:border-indigo-500 transition-colors"
+                                autoFocus
+                            />
+                            {authError && (
+                                <p className="text-xs text-red-400 flex items-center gap-1 mt-1">
+                                    <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                                    {authError}
+                                </p>
+                            )}
+                        </div>
+
+                        <button
+                            type="submit"
+                            disabled={isLoggingIn || !inputPassword.trim()}
+                            className="w-full bg-gradient-to-r from-indigo-500 to-violet-600 hover:from-indigo-600 hover:to-violet-700 text-white py-3 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-all disabled:opacity-50 shadow-lg shadow-indigo-500/20 active:scale-[0.99]"
+                        >
+                            {isLoggingIn ? <Loader2 className="w-4 h-4 animate-spin" /> : <Unlock className="w-4 h-4" />}
+                            {isLoggingIn ? "Vérification..." : "Déverrouiller le Studio"}
+                        </button>
+                    </form>
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div className="min-h-screen bg-[#111113] text-zinc-300 font-sans p-4 md:p-8 flex justify-center selection:bg-indigo-500/30">
             <div className="w-full max-w-3xl flex flex-col gap-6 pb-20">
@@ -1246,10 +1387,41 @@ Rules:
                             className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${userApiKey ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-zinc-800/80 border-zinc-700 text-zinc-400 hover:text-white'}`}
                         >
                             <Key className="w-3.5 h-3.5" />
-                            {userApiKey ? 'Clé Personnalisée' : 'Clé Démo'}
+                            {userApiKey ? 'Clé Perso' : 'Clé Démo'}
+                        </button>
+
+                        <button
+                            onClick={handleLogout}
+                            className="p-2 text-zinc-500 hover:text-red-400 hover:bg-zinc-800/80 rounded-lg transition-colors"
+                            title="Se déconnecter"
+                        >
+                            <LogOut className="w-4 h-4" />
                         </button>
                     </div>
                 </div>
+
+                {/* ── REMOTE LIVE SYNC BANNER (PC ↔ SMARTPHONE) ── */}
+                {remoteJob && remoteJob.status === 'running' && !isGenerating && (
+                    <div className="bg-indigo-500/10 border border-indigo-500/30 p-4 rounded-xl flex items-center justify-between gap-4 animate-in fade-in">
+                        <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-9 h-9 rounded-lg bg-indigo-500/20 text-indigo-300 flex items-center justify-center flex-shrink-0">
+                                <Radio className="w-4 h-4 animate-pulse" />
+                            </div>
+                            <div className="min-w-0">
+                                <p className="text-xs font-semibold text-indigo-200 truncate flex items-center gap-1.5">
+                                    <Smartphone className="w-3.5 h-3.5" />
+                                    Génération en direct sur un autre appareil
+                                </p>
+                                <p className="text-[11px] text-zinc-400 truncate">
+                                    Segment {remoteJob.current_chunk} / {remoteJob.total_chunks} ({remoteJob.percent}%) — {remoteJob.status_text}
+                                </p>
+                            </div>
+                        </div>
+                        <div className="w-24 bg-zinc-800 rounded-full h-2 overflow-hidden flex-shrink-0">
+                            <div className="bg-indigo-500 h-full rounded-full transition-all duration-300" style={{ width: `${remoteJob.percent}%` }} />
+                        </div>
+                    </div>
+                )}
 
                 {/* TAB NAVIGATION */}
                 <div className="flex gap-1 bg-zinc-900/60 border border-zinc-800 p-1 rounded-xl w-fit">
@@ -1715,6 +1887,36 @@ Rules:
 
                 {/* GENERATION & OUTPUT SECTION */}
                 <div className="pt-2 border-t border-zinc-800/80">
+                    {/* CHECKPOINT RECOVERY BANNER */}
+                    {resumableChunkIdx > 0 && !isGenerating && (
+                        <div className="bg-amber-500/10 border border-amber-500/30 p-4 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-3 animate-in fade-in">
+                            <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-300 flex items-center justify-center flex-shrink-0">
+                                    <RotateCcw className="w-4 h-4" />
+                                </div>
+                                <div>
+                                    <p className="text-xs font-semibold text-amber-200">Génération interrompue — Checkpoint prêt</p>
+                                    <p className="text-[11px] text-zinc-400">Les segments 1 à {resumableChunkIdx} sont conservés en mémoire. Aucun token ne sera dépensé pour ces segments.</p>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-2 flex-shrink-0 w-full sm:w-auto justify-end">
+                                <button
+                                    onClick={() => { setResumableChunkIdx(0); setCachedBuffers([]); }}
+                                    className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 text-xs rounded-lg transition-colors"
+                                >
+                                    Recommencer à zéro
+                                </button>
+                                <button
+                                    onClick={() => handleGenerate(resumableChunkIdx)}
+                                    className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-600 text-black font-semibold text-xs rounded-lg transition-all flex items-center gap-1.5 shadow-md shadow-amber-500/20"
+                                >
+                                    <Play className="w-3.5 h-3.5 fill-black" />
+                                    Reprendre au segment {resumableChunkIdx + 1}
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
                     {isGenerating ? (
                         <div className="bg-[#1a1a1c] border border-indigo-500/30 p-6 rounded-xl flex flex-col gap-4 shadow-lg animate-in fade-in zoom-in-95">
                             <div className="flex justify-between items-center text-sm">
@@ -1776,7 +1978,7 @@ Rules:
                         </div>
                     ) : (
                         <button 
-                            onClick={handleGenerate}
+                            onClick={() => handleGenerate(0)}
                             disabled={script.trim().length === 0}
                             className="w-full bg-gradient-to-r from-indigo-500 to-violet-600 hover:from-indigo-600 hover:to-violet-700 text-white py-3.5 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-indigo-500/25 active:scale-[0.99]"
                         >

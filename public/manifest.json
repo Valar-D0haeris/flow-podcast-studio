@@ -1,0 +1,18 @@
+{
+  "name": "Flow Podcast Studio Pro",
+  "short_name": "Flow Podcast",
+  "description": "Studio de génération audio de podcasts par IA Gemini",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#111113",
+  "theme_color": "#6366f1",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
