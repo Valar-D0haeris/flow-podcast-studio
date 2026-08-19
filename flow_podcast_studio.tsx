@@ -97,6 +97,22 @@ const buildWavHeader = (mergedPcm, sampleRate = 24000) => {
     return wavBuffer;
 };
 
+// Pre-process text before TTS to remove stage directions like (Rire), (Sourire)
+const cleanTextForTTS = (text: string): string => {
+    if (!text) return "";
+    let cleaned = text.replace(/\((?:rire|rires)\)/gi, 'Haha,');
+    cleaned = cleaned.replace(/\([^)]+\)/g, '');
+    return cleaned.replace(/\s{2,}/g, ' ').trim();
+};
+
+// SSML Wrapper
+const wrapWithSSML = (text: string, config: any): string => {
+    if (!config || (config.speed === 'medium' && config.pitch === 'default')) {
+        return text;
+    }
+    return `<speak><prosody rate="${config.speed}" pitch="${config.pitch}">${text}</prosody></speak>`;
+};
+
 // Custom Audio Player Component
 const AudioPlayer = ({ src, onDownload }) => {
     const audioRef = useRef(null);
@@ -483,22 +499,6 @@ export default function App() {
         if (charLower.includes('maya')) return 'Aoede';
         if (charLower.includes('leo') || charLower.includes('léo')) return 'Puck';
         return GEMINI_VOICES[0].id;
-    };
-
-    // Pre-process text before TTS to remove stage directions like (Rire), (Sourire)
-    const cleanTextForTTS = (text: string): string => {
-        if (!text) return "";
-        let cleaned = text.replace(/\((?:rire|rires)\)/gi, 'Haha,');
-        cleaned = cleaned.replace(/\([^)]+\)/g, '');
-        return cleaned.replace(/\s{2,}/g, ' ').trim();
-    };
-
-    // SSML Wrapper
-    const wrapWithSSML = (text: string, config: any): string => {
-        if (!config || (config.speed === 'medium' && config.pitch === 'default')) {
-            return text;
-        }
-        return `<speak><prosody rate="${config.speed}" pitch="${config.pitch}">${text}</prosody></speak>`;
     };
 
     // Single-speaker TTS for voice preview tests
