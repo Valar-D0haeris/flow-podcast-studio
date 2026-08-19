@@ -961,10 +961,9 @@ Rules:
         reader.readAsText(file);
     };
 
-    const handleDownloadWav = (blobToDownload?: Blob | null, customFilename?: string) => {
-        const targetBlob = blobToDownload || audioBlob;
-        if (!targetBlob) return;
-
+    const handleDownloadWav = (blobToDownload?: any, customFilename?: string) => {
+        const actualBlob = (blobToDownload instanceof Blob) ? blobToDownload : audioBlob;
+        
         // Generate clean readable filename
         const firstLine = script.split('\n').find(l => l.trim().length > 0) || "";
         const cleanTitle = firstLine
@@ -974,18 +973,34 @@ Rules:
             .slice(0, 30)
             .replace(/\s+/g, '_') || "Studio_Export";
         const dateStr = new Date().toISOString().slice(0, 10);
-        const filename = customFilename || `Flow_Podcast_${cleanTitle}_${dateStr}.wav`;
+        const filename = (typeof customFilename === 'string' && customFilename.trim().length > 0) 
+            ? customFilename 
+            : `Flow_Podcast_${cleanTitle}_${dateStr}.wav`;
 
-        const url = URL.createObjectURL(targetBlob);
+        let downloadUrl = "";
+        let shouldRevoke = false;
+
+        if (actualBlob) {
+            downloadUrl = URL.createObjectURL(actualBlob);
+            shouldRevoke = true;
+        } else if (audioUrl) {
+            downloadUrl = audioUrl;
+        } else {
+            return;
+        }
+
         const a = document.createElement('a');
         a.style.display = 'none';
-        a.href = url;
-        a.download = filename;
+        a.href = downloadUrl;
+        a.setAttribute('download', filename);
         document.body.appendChild(a);
         a.click();
+        
         setTimeout(() => {
             document.body.removeChild(a);
-            URL.revokeObjectURL(url);
+            if (shouldRevoke) {
+                URL.revokeObjectURL(downloadUrl);
+            }
         }, 1500);
     };
 
@@ -1524,7 +1539,7 @@ Rules:
                     {/* CUSTOM AUDIO PLAYER RESULT */}
                     {audioUrl && !isGenerating && (
                         <div className="mt-5">
-                            <AudioPlayer src={audioUrl} onDownload={handleDownloadWav} />
+                            <AudioPlayer src={audioUrl} onDownload={() => handleDownloadWav()} />
                         </div>
                     )}
                 </div>
