@@ -29,36 +29,6 @@ const GEMINI_MODELS = [
     { id: 'gemini-2.5-pro-preview-tts', name: 'Gemini 2.5 Pro TTS', category: 'TTS Dédié', tag: 'Pro TTS' }
 ];
 
-const TEMPLATES = [
-    {
-        id: 'tech_ai',
-        title: '🤖 Débat IA & Futurs',
-        description: 'Discussion passionnante sur la conscience des IA.',
-        script: `Léo : Bienvenue dans Flow Podcast ! Aujourd'hui, on se pose une question captivante : l'intelligence artificielle peut-elle développer une forme de créativité authentique ?
-Maya : Salut Léo ! C'est un sujet fascinant. Les algorithmes génératifs combinent des milliards de motifs appris pour composer de nouvelles idées, mais créent-ils avec une réelle intention ?
-Léo : Exactement. Il y a une nuance fondamentale entre combiner des données et ressentir une émotion créative.
-Maya : Tout à fait ! Mais pour l'utilisateur final, le résultat artistique est souvent bluffant.`
-    },
-    {
-        id: 'space_science',
-        title: '🌌 L\'Énigme de Mars',
-        description: 'Exploration scientifique sur la planète rouge.',
-        script: `Prof. Astro : Avez-vous déjà imaginé ce que nous découvririons sous la surface glacée de Mars ?
-Élodie : Les récentes analyses radar suggèrent la présence de poches d'eau liquide sous la calotte polaire !
-Prof. Astro : En effet Élodie. Et là où l'eau persiste, la possibilité d'une vie microbienne fossile devient une hypothèse captivante.
-Élodie : C'est le Graal absolu pour les prochaines missions d'exploration spatiale.`
-    },
-    {
-        id: 'business_startup',
-        title: '💡 Pitch Startup',
-        description: 'Échange entre un investisseur et un fondateur.',
-        script: `Sophie : Thomas, expliquez-nous votre vision pour révolutionner le domaine des contenus audio.
-Thomas : Bonjour Sophie. Nous permettons aux créateurs de transformer n'importe quel texte en podcast studio réaliste à deux voix en quelques secondes.
-Sophie : Très prometteur ! Comment assurez-vous la naturalité des intonations et le respect des personnages ?
-Thomas : Grâce aux modèles Gemini TTS et à une personnalisation fine des voix et du ton de chaque intervenant.`
-    }
-];
-
 const base64ToArrayBuffer = (base64) => {
     const cleanBase64 = base64.replace(/[\r\n\s]/g, '');
     const binaryString = window.atob(cleanBase64);
@@ -1329,9 +1299,11 @@ Rules:
             <div className="min-h-screen bg-[#111113] text-zinc-300 font-sans p-4 flex items-center justify-center selection:bg-indigo-500/30">
                 <div className="w-full max-w-md bg-[#1a1a1c] border border-zinc-800 rounded-3xl p-8 shadow-2xl flex flex-col gap-6 animate-in fade-in zoom-in-95">
                     <div className="flex flex-col items-center text-center gap-3">
-                        <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center text-white shadow-xl shadow-indigo-500/25">
-                            <Lock className="w-7 h-7" />
-                        </div>
+                        <img 
+                            src="/logo.png" 
+                            alt="Flow Podcast Logo" 
+                            className="w-16 h-16 rounded-2xl shadow-xl shadow-indigo-500/25 border border-indigo-500/30 object-cover" 
+                        />
                         <div>
                             <h1 className="text-xl font-bold text-white tracking-tight">Flow Podcast Studio Pro</h1>
                             <p className="text-xs text-zinc-500 mt-1">Accès sécurisé (PC & Smartphone)</p>
@@ -1378,9 +1350,11 @@ Rules:
                 {/* BRANDING & HEADER BAR */}
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-zinc-800/80 pb-4">
                     <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center text-white shadow-lg shadow-indigo-500/20">
-                            <Wand2 className="w-5 h-5" />
-                        </div>
+                        <img 
+                            src="/logo.png" 
+                            alt="Flow Podcast Logo" 
+                            className="w-10 h-10 rounded-xl shadow-md shadow-indigo-500/20 border border-indigo-500/30 object-cover" 
+                        />
                         <div>
                             <h1 className="text-xl font-bold text-white tracking-tight flex items-center gap-2">
                                 Flow Podcast <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">Studio Pro</span>
@@ -1671,25 +1645,6 @@ Rules:
                         </button>
                     </div>
                 </div>
-
-                {/* SCRIPT TEMPLATES SELECTOR */}
-                {script.trim().length === 0 && (
-                    <div className="flex flex-col gap-2.5">
-                        <span className="text-xs font-semibold text-zinc-500 uppercase tracking-wider pl-1">Exemples de scripts rapides</span>
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                            {TEMPLATES.map((tmpl) => (
-                                <button 
-                                    key={tmpl.id}
-                                    onClick={() => { setScript(tmpl.script); setErrorMsg(null); }}
-                                    className="bg-[#1a1a1c] hover:bg-[#222226] border border-zinc-800/80 hover:border-indigo-500/40 p-3 rounded-xl text-left transition-all flex flex-col gap-1 group shadow-sm"
-                                >
-                                    <span className="text-xs font-semibold text-zinc-200 group-hover:text-indigo-300 transition-colors">{tmpl.title}</span>
-                                    <span className="text-[11px] text-zinc-500 line-clamp-2 leading-relaxed">{tmpl.description}</span>
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-                )}
 
                 {/* SCRIPT INPUT OR CHAT VIEW */}
                 <div className="bg-[#1a1a1c] rounded-xl border border-zinc-800/80 shadow-sm overflow-hidden focus-within:border-zinc-600 transition-colors">
