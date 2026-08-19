@@ -114,6 +114,30 @@ const wrapWithSSML = (text: string, config: any): string => {
     return `<speak><prosody rate="${config.speed}" pitch="${config.pitch}">${text}</prosody></speak>`;
 };
 
+const isFemaleName = (name: string): boolean => {
+    const n = name.toLowerCase();
+    return n.includes('maya') || n.includes('sophie') || n.includes('elodie') || n.includes('élodie') ||
+           n.includes('sarah') || n.includes('emma') || n.includes('marie') || n.includes('clara') ||
+           n.includes('juliette') || n.includes('alice') || n.includes('camille') || n.includes('chloe') ||
+           n.includes('chloé') || n.includes('anna') || n.includes('lea') || n.includes('léa') ||
+           n.includes('femme') || n.includes('narratrice') || n.includes('hote 1') || n.includes('hôte 1');
+};
+
+const isMaleName = (name: string): boolean => {
+    const n = name.toLowerCase();
+    return n.includes('leo') || n.includes('léo') || n.includes('thomas') || n.includes('marc') ||
+           n.includes('paul') || n.includes('antoine') || n.includes('alex') || n.includes('astro') ||
+           n.includes('lucas') || n.includes('julien') || n.includes('david') || n.includes('homme') ||
+           n.includes('narrateur') || n.includes('hote 2') || n.includes('hôte 2');
+};
+
+const getDefaultVoiceForCharacter = (character: string, index: number): string => {
+    if (isFemaleName(character)) return 'Aoede'; // Féminin
+    if (isMaleName(character)) return 'Puck';   // Masculin
+    const alternating = ['Aoede', 'Puck', 'Kore', 'Charon', 'Leda', 'Fenrir', 'Puma', 'Zephyr'];
+    return alternating[index % alternating.length];
+};
+
 // Custom Audio Player Component
 const AudioPlayer = ({ src, onDownload }) => {
     const audioRef = useRef(null);
@@ -321,8 +345,19 @@ export default function App() {
     // Character Detection State
     const [characters, setCharacters] = useState<string[]>([]);
     
-    // Character configurations
-    const [voiceConfigs, setVoiceConfigs] = useState<Record<string, { voice: string, prompt: string, emotion: string, speed: string, pitch: string }>>({});
+    // Character configurations with persistent storage
+    const [voiceConfigs, setVoiceConfigs] = useState<Record<string, { voice: string, prompt: string, emotion: string, speed: string, pitch: string }>>(() => {
+        try {
+            const saved = localStorage.getItem('flow_podcast_voice_presets');
+            return saved ? JSON.parse(saved) : {};
+        } catch {
+            return {};
+        }
+    });
+
+    // History Audio Preview State
+    const [playingHistoryId, setPlayingHistoryId] = useState<number | null>(null);
+    const historyAudioRef = useRef<HTMLAudioElement | null>(null);
 
     // Generation State
     const [progressStats, setProgressStats] = useState({ status: '', percent: 0, currentChunk: 0, totalChunks: 0 });
@@ -366,6 +401,10 @@ export default function App() {
 
     const handleDeleteHistory = async (id: number) => {
         if (!confirm('Supprimer ce podcast de l\'historique et du stockage cloud ?')) return;
+        if (playingHistoryId === id && historyAudioRef.current) {
+            historyAudioRef.current.pause();
+            setPlayingHistoryId(null);
+        }
         try {
             const res = await fetch(`/api/history?id=${id}`, { method: 'DELETE' });
             if (res.ok) {
@@ -374,6 +413,48 @@ export default function App() {
         } catch (err) {
             console.error('[history-delete] error:', err);
         }
+    };
+
+    const togglePlayHistory = (id: number, blobUrl: string) => {
+        if (playingHistoryId === id) {
+            if (historyAudioRef.current) {
+                historyAudioRef.current.pause();
+            }
+            setPlayingHistoryId(null);
+        } else {
+            if (historyAudioRef.current) {
+                historyAudioRef.current.pause();
+            }
+            const audio = new Audio(blobUrl);
+            historyAudioRef.current = audio;
+            audio.play().catch(e => console.error('[history-play] Error playing audio:', e));
+            setPlayingHistoryId(id);
+            audio.onended = () => {
+                setPlayingHistoryId(null);
+            };
+            audio.onerror = () => {
+                setPlayingHistoryId(null);
+            };
+        }
+    };
+
+    // Update and persist voice configs
+    const updateVoiceConfig = (char: string, patch: Partial<{ voice: string, prompt: string, emotion: string, speed: string, pitch: string }>) => {
+        setVoiceConfigs(prev => {
+            const updated = {
+                ...prev,
+                [char]: {
+                    ...(prev[char] || { voice: getDefaultVoiceForCharacter(char, 0), prompt: '', emotion: 'Neutre', speed: 'medium', pitch: 'default' }),
+                    ...patch
+                }
+            };
+            try {
+                localStorage.setItem('flow_podcast_voice_presets', JSON.stringify(updated));
+            } catch (e) {
+                console.warn('[presets] Failed to save presets:', e);
+            }
+            return updated;
+        });
     };
 
     useEffect(() => {
@@ -475,7 +556,7 @@ export default function App() {
             detectedChars.forEach((char: string, index: number) => {
                 if (!newConfigs[char]) {
                     newConfigs[char] = {
-                        voice: GEMINI_VOICES[index % GEMINI_VOICES.length].id,
+                        voice: getDefaultVoiceForCharacter(char, index),
                         prompt: '',
                         emotion: 'Neutre',
                         speed: 'medium',
@@ -484,6 +565,11 @@ export default function App() {
                     updated = true;
                 }
             });
+            if (updated) {
+                try {
+                    localStorage.setItem('flow_podcast_voice_presets', JSON.stringify(newConfigs));
+                } catch {}
+            }
             return updated ? newConfigs : prev;
         });
     }, [script]);
@@ -576,10 +662,7 @@ export default function App() {
     const getLockedVoice = (character: string): string => {
         const config = voiceConfigs[character];
         if (config && config.voice) return config.voice;
-        const charLower = character.toLowerCase();
-        if (charLower.includes('maya')) return 'Aoede';
-        if (charLower.includes('leo') || charLower.includes('léo')) return 'Puck';
-        return GEMINI_VOICES[0].id;
+        return getDefaultVoiceForCharacter(character, 0);
     };
 
     // Single-speaker TTS for voice preview tests
@@ -1462,7 +1545,7 @@ Rules:
                                                 <label className="text-[11px] font-medium text-zinc-500">Voix Gemini</label>
                                                 <select 
                                                     value={config.voice}
-                                                    onChange={(e) => setVoiceConfigs(p => ({...p, [char]: {...p[char], voice: e.target.value}}))}
+                                                    onChange={(e) => updateVoiceConfig(char, { voice: e.target.value })}
                                                     className="w-full bg-[#111113] border border-zinc-800 text-xs rounded-lg p-2.5 text-zinc-200 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer"
                                                 >
                                                     {GEMINI_VOICES.map(v => (
@@ -1478,7 +1561,7 @@ Rules:
                                                     <label className="text-[11px] font-medium text-zinc-500">Émotion</label>
                                                     <select 
                                                         value={config.emotion || 'Neutre'}
-                                                        onChange={(e) => setVoiceConfigs(p => ({...p, [char]: {...p[char], emotion: e.target.value}}))}
+                                                        onChange={(e) => updateVoiceConfig(char, { emotion: e.target.value })}
                                                         className="w-full bg-[#111113] border border-zinc-800 text-xs rounded-lg p-2.5 text-zinc-200 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer"
                                                     >
                                                         <option value="Neutre">Neutre</option>
@@ -1492,7 +1575,7 @@ Rules:
                                                     <label className="text-[11px] font-medium text-zinc-500">Vitesse</label>
                                                     <select 
                                                         value={config.speed || 'medium'}
-                                                        onChange={(e) => setVoiceConfigs(p => ({...p, [char]: {...p[char], speed: e.target.value}}))}
+                                                        onChange={(e) => updateVoiceConfig(char, { speed: e.target.value })}
                                                         className="w-full bg-[#111113] border border-zinc-800 text-xs rounded-lg p-2.5 text-zinc-200 focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer"
                                                     >
                                                         <option value="slow">Lent</option>
@@ -1779,15 +1862,27 @@ Rules:
                                                 </div>
                                             </div>
                                             <div className="flex items-center gap-2 flex-shrink-0">
-                                                <a
-                                                    href={item.blob_url}
-                                                    target="_blank"
-                                                    rel="noopener noreferrer"
-                                                    className="p-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 transition-colors"
-                                                    title="Ouvrir dans le navigateur"
+                                                <button
+                                                    onClick={() => togglePlayHistory(item.id, item.blob_url)}
+                                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all shadow-sm ${
+                                                        playingHistoryId === item.id 
+                                                            ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse' 
+                                                            : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200'
+                                                    }`}
+                                                    title="Écouter directement dans le navigateur"
                                                 >
-                                                    <ExternalLink className="w-3.5 h-3.5" />
-                                                </a>
+                                                    {playingHistoryId === item.id ? (
+                                                        <>
+                                                            <Pause className="w-3.5 h-3.5 fill-amber-300" />
+                                                            Pause
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <Play className="w-3.5 h-3.5 fill-zinc-200" />
+                                                            Écouter
+                                                        </>
+                                                    )}
+                                                </button>
                                                 <a
                                                     href={item.download_url}
                                                     download={item.filename}
