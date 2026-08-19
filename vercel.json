@@ -1,0 +1,18 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/$1"
+    }
+  ],
+  "functions": {
+    "api/history.ts": {
+      "maxDuration": 10,
+      "memory": 256
+    },
+    "api/blob/upload.ts": {
+      "maxDuration": 60,
+      "memory": 1024
+    }
+  }
+}

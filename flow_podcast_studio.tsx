@@ -4,7 +4,8 @@ import {
     Trash2, User, Wand2, RefreshCw, Edit3, MessageSquare, Key, Sparkles, Copy, 
     Upload, Check, RotateCcw, FastForward, Settings, HelpCircle, X, Cpu,
     Activity, CheckCircle2, XCircle, AlertTriangle, Gauge, Zap, ShieldCheck,
-    PauseOctagon, PlaySquare, StopCircle, AlertOctagon, Sliders, Shield
+    PauseOctagon, PlaySquare, StopCircle, AlertOctagon, Sliders, Shield,
+    History, Cloud, ExternalLink
 } from 'lucide-react';
 
 const DEFAULT_API_KEY = (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
@@ -328,6 +329,17 @@ export default function App() {
     const [errorMsg, setErrorMsg] = useState(null);
     const [audioUrl, setAudioUrl] = useState<string | null>(null);
     const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
+
+    // Vercel Blob Cloud Storage State
+    const [blobUrl, setBlobUrl] = useState<string | null>(null);
+    const [blobDownloadUrl, setBlobDownloadUrl] = useState<string | null>(null);
+    const [isUploading, setIsUploading] = useState(false);
+    const [uploadError, setUploadError] = useState<string | null>(null);
+
+    // History State
+    const [historyItems, setHistoryItems] = useState<any[]>([]);
+    const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+    const [activeTab, setActiveTab] = useState<'studio' | 'history'>('studio');
     
     // Preview Audio State
     const [previewingChar, setPreviewingChar] = useState(null);
@@ -335,6 +347,63 @@ export default function App() {
     const [isFormatting, setIsFormatting] = useState(false);
 
     const activeApiKey = userApiKey.trim() || DEFAULT_API_KEY;
+
+    // Load history on mount and when switching to history tab
+    const fetchHistory = async () => {
+        setIsLoadingHistory(true);
+        try {
+            const res = await fetch('/api/history');
+            if (res.ok) {
+                const data = await res.json();
+                setHistoryItems(data.items || []);
+            }
+        } catch (err) {
+            console.warn('[history] Failed to fetch:', err);
+        } finally {
+            setIsLoadingHistory(false);
+        }
+    };
+
+    useEffect(() => {
+        fetchHistory();
+    }, []);
+
+    // Upload WAV blob to Vercel Blob via /api/blob/upload
+    const uploadToVercelBlob = async (wavBlob: Blob, filename: string, durationText: string) => {
+        setIsUploading(true);
+        setUploadError(null);
+        try {
+            const scriptExcerpt = btoa(unescape(encodeURIComponent(script.slice(0, 300))));
+            const res = await fetch('/api/blob/upload', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'audio/wav',
+                    'x-filename': filename,
+                    'x-duration': durationText,
+                    'x-script-excerpt': scriptExcerpt,
+                },
+                body: wavBlob,
+            });
+
+            if (!res.ok) {
+                const errData = await res.json().catch(() => ({}));
+                throw new Error(errData.error || `Upload failed (${res.status})`);
+            }
+
+            const data = await res.json();
+            setBlobUrl(data.url);
+            setBlobDownloadUrl(data.downloadUrl);
+            // Refresh history after successful upload
+            await fetchHistory();
+            return data;
+        } catch (err: any) {
+            console.error('[uploadToVercelBlob] error:', err);
+            setUploadError(err.message);
+            return null;
+        } finally {
+            setIsUploading(false);
+        }
+    };
 
     // Fixed & Enhanced Unicode Regex for Speaker Parsing (Supports Accents like Léo, Élodie, Benoît, etc.)
     const parseScriptToBlocks = (text) => {
@@ -750,6 +819,9 @@ export default function App() {
         isPausedRef.current = false;
         isCancelledRef.current = false;
         setErrorMsg(null);
+        setBlobUrl(null);
+        setBlobDownloadUrl(null);
+        setUploadError(null);
         
         if (audioUrl) {
             URL.revokeObjectURL(audioUrl);
@@ -882,6 +954,23 @@ export default function App() {
                     setAudioUrl(finalResult.url);
                     setAudioBlob(finalResult.blob);
                     setViewMode("preview");
+
+                    // Async upload to Vercel Blob (non-blocking for playback)
+                    setProgressStats(prev => ({ ...prev, status: '☁️ Sauvegarde en cours vers Vercel Blob...', percent: 98 }));
+                    const firstLine = script.split('\n').find(l => l.trim().length > 0) || '';
+                    const cleanTitle = firstLine
+                        .replace(/^[^:]+:\s*/, '')
+                        .replace(/[^a-zA-Z0-9\u00C0-\u017F\s_-]/g, '')
+                        .trim().slice(0, 30).replace(/\s+/g, '_') || 'Studio_Export';
+                    const dateStr = new Date().toISOString().slice(0, 10);
+                    const wavFilename = `Flow_Podcast_${cleanTitle}_${dateStr}.wav`;
+                    const { totalSeconds } = estimateDuration(script);
+                    const mins = Math.floor(totalSeconds / 60);
+                    const secs = Math.round(totalSeconds % 60);
+                    const durationText = `${mins}m${secs}s`;
+                    uploadToVercelBlob(finalResult.blob, wavFilename, durationText).then(() => {
+                        setProgressStats(prev => ({ ...prev, status: '✅ Podcast généré et sauvegardé dans le cloud !', percent: 100 }));
+                    });
                 }
             }
         } catch (err) {
@@ -962,8 +1051,6 @@ Rules:
     };
 
     const handleDownloadWav = (blobToDownload?: any, customFilename?: string) => {
-        const actualBlob = (blobToDownload instanceof Blob) ? blobToDownload : audioBlob;
-        
         // Generate clean readable filename
         const firstLine = script.split('\n').find(l => l.trim().length > 0) || "";
         const cleanTitle = firstLine
@@ -977,6 +1064,20 @@ Rules:
             ? customFilename 
             : `Flow_Podcast_${cleanTitle}_${dateStr}.wav`;
 
+        // PRIORITY 1: Use the permanent Vercel Blob download URL (no size limit, no corruption)
+        if (blobDownloadUrl && !(blobToDownload instanceof Blob)) {
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = blobDownloadUrl;
+            a.setAttribute('download', filename);
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => document.body.removeChild(a), 1500);
+            return;
+        }
+
+        // PRIORITY 2: Use the passed Blob or in-memory audioBlob (fallback for partial downloads)
+        const actualBlob = (blobToDownload instanceof Blob) ? blobToDownload : audioBlob;
         let downloadUrl = "";
         let shouldRevoke = false;
 
@@ -1051,6 +1152,53 @@ Rules:
                         </button>
                     </div>
                 </div>
+
+                {/* TAB NAVIGATION */}
+                <div className="flex gap-1 bg-zinc-900/60 border border-zinc-800 p-1 rounded-xl w-fit">
+                    <button
+                        onClick={() => setActiveTab('studio')}
+                        className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${activeTab === 'studio' ? 'bg-indigo-500 text-white shadow-sm shadow-indigo-500/30' : 'text-zinc-400 hover:text-zinc-200'}`}
+                    >
+                        <Wand2 className="w-3.5 h-3.5" />
+                        Studio
+                    </button>
+                    <button
+                        onClick={() => { setActiveTab('history'); fetchHistory(); }}
+                        className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${activeTab === 'history' ? 'bg-indigo-500 text-white shadow-sm shadow-indigo-500/30' : 'text-zinc-400 hover:text-zinc-200'}`}
+                    >
+                        <History className="w-3.5 h-3.5" />
+                        Historique
+                        {historyItems.length > 0 && (
+                            <span className="text-[10px] bg-indigo-400/20 text-indigo-300 px-1.5 py-0.5 rounded-full">{historyItems.length}</span>
+                        )}
+                    </button>
+                </div>
+
+                {/* UPLOAD STATUS BANNER */}
+                {isUploading && (
+                    <div className="flex items-center gap-3 bg-blue-500/10 border border-blue-500/30 text-blue-300 px-4 py-2.5 rounded-xl text-sm animate-pulse">
+                        <Cloud className="w-4 h-4 flex-shrink-0" />
+                        <span>Sauvegarde du podcast dans le cloud Vercel Blob...</span>
+                    </div>
+                )}
+                {blobUrl && !isUploading && (
+                    <div className="flex items-center justify-between gap-3 bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 px-4 py-2.5 rounded-xl text-sm">
+                        <div className="flex items-center gap-2">
+                            <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+                            <span className="text-xs">Podcast sauvegardé dans le cloud — URL permanente disponible</span>
+                        </div>
+                        <a href={blobUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-xs text-emerald-400 hover:text-emerald-200 transition-colors flex-shrink-0">
+                            <ExternalLink className="w-3.5 h-3.5" />
+                            Voir
+                        </a>
+                    </div>
+                )}
+                {uploadError && !isUploading && (
+                    <div className="flex items-center gap-3 bg-amber-500/10 border border-amber-500/30 text-amber-300 px-4 py-2.5 rounded-xl text-xs">
+                        <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                        <span>Upload cloud échoué (lecture locale disponible) : {uploadError}</span>
+                    </div>
+                )}
 
                 {/* API KEY SETTINGS MODAL / PANEL */}
                 {showKeySettings && (
@@ -1140,8 +1288,11 @@ Rules:
                     </div>
                 )}
 
-                {/* NAVIGATION TABS & ACTIONS */}
-                <div className="flex items-center justify-between border-b border-zinc-800/80 pb-3">
+                {/* STUDIO TAB CONTENT */}
+                {activeTab === 'studio' && (
+                    <>
+                        {/* NAVIGATION TABS & ACTIONS */}
+                        <div className="flex items-center justify-between border-b border-zinc-800/80 pb-3">
                     <div className="flex items-center gap-1 bg-[#1a1a1c] p-1 rounded-lg border border-zinc-800/50">
                         <button 
                             onClick={() => setViewMode("editor")}
@@ -1536,13 +1687,108 @@ Rules:
                         </button>
                     )}
                     
-                    {/* CUSTOM AUDIO PLAYER RESULT */}
-                    {audioUrl && !isGenerating && (
-                        <div className="mt-5">
-                            <AudioPlayer src={audioUrl} onDownload={() => handleDownloadWav()} />
+                            {/* CUSTOM AUDIO PLAYER RESULT */}
+                            {audioUrl && !isGenerating && (
+                                <div className="mt-5">
+                                    <AudioPlayer src={audioUrl} onDownload={() => handleDownloadWav()} />
+                                </div>
+                            )}
                         </div>
-                    )}
-                </div>
+                    </>
+                )}
+
+                {/* ── HISTORY TAB ── */}
+                {activeTab === 'history' && (
+                    <div className="flex flex-col gap-4">
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+                                    <History className="w-4 h-4 text-indigo-400" />
+                                    Historique des Générations
+                                </h2>
+                                <p className="text-xs text-zinc-500 mt-0.5">Podcasts générés et sauvegardés dans le cloud</p>
+                            </div>
+                            <button
+                                onClick={fetchHistory}
+                                disabled={isLoadingHistory}
+                                className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs rounded-lg transition-colors disabled:opacity-50"
+                            >
+                                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingHistory ? 'animate-spin' : ''}`} />
+                                Actualiser
+                            </button>
+                        </div>
+
+                        {isLoadingHistory && (
+                            <div className="flex items-center justify-center py-12 text-zinc-500 gap-3">
+                                <Loader2 className="w-5 h-5 animate-spin" />
+                                <span className="text-sm">Chargement de l'historique...</span>
+                            </div>
+                        )}
+
+                        {!isLoadingHistory && historyItems.length === 0 && (
+                            <div className="bg-[#1a1a1c] border border-zinc-800 rounded-2xl p-12 flex flex-col items-center justify-center gap-3 text-center">
+                                <div className="w-14 h-14 rounded-2xl bg-zinc-800/80 flex items-center justify-center">
+                                    <History className="w-7 h-7 text-zinc-600" />
+                                </div>
+                                <p className="text-sm text-zinc-400 font-medium">Aucune génération dans l'historique</p>
+                                <p className="text-xs text-zinc-600 max-w-xs">Générez votre premier podcast pour qu'il apparaisse ici. Il sera automatiquement sauvegardé dans le cloud.</p>
+                            </div>
+                        )}
+
+                        {!isLoadingHistory && historyItems.length > 0 && (
+                            <div className="flex flex-col gap-3">
+                                {historyItems.map((item: any) => {
+                                    const date = new Date(item.created_at);
+                                    const dateStr = date.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' });
+                                    const timeStr = date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+                                    return (
+                                        <div key={item.id} className="bg-[#1a1a1c] border border-zinc-800 hover:border-zinc-700 rounded-xl p-4 flex items-center justify-between gap-4 transition-colors group">
+                                            <div className="flex items-start gap-3 min-w-0">
+                                                <div className="w-9 h-9 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                                                    <FileText className="w-4 h-4 text-indigo-400" />
+                                                </div>
+                                                <div className="min-w-0">
+                                                    <p className="text-sm font-medium text-zinc-200 truncate">{item.filename || 'Flow Podcast'}</p>
+                                                    <div className="flex items-center gap-3 mt-1 flex-wrap">
+                                                        <span className="text-xs text-zinc-500">{dateStr} à {timeStr}</span>
+                                                        {item.duration_text && (
+                                                            <span className="text-xs text-indigo-400 flex items-center gap-1">
+                                                                <Clock className="w-3 h-3" />
+                                                                {item.duration_text}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    {item.script_excerpt && (
+                                                        <p className="text-xs text-zinc-600 mt-1 truncate max-w-xs">{item.script_excerpt}</p>
+                                                    )}
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center gap-2 flex-shrink-0">
+                                                <a
+                                                    href={item.blob_url}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    className="p-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 transition-colors"
+                                                    title="Ouvrir dans le navigateur"
+                                                >
+                                                    <ExternalLink className="w-3.5 h-3.5" />
+                                                </a>
+                                                <a
+                                                    href={item.download_url}
+                                                    download={item.filename}
+                                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-medium rounded-lg transition-all shadow-sm"
+                                                >
+                                                    <Download className="w-3.5 h-3.5" />
+                                                    .WAV
+                                                </a>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </div>
+                )}
             </div>
         </div>
     );
