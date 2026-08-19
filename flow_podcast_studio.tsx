@@ -364,6 +364,18 @@ export default function App() {
         }
     };
 
+    const handleDeleteHistory = async (id: number) => {
+        if (!confirm('Supprimer ce podcast de l\'historique et du stockage cloud ?')) return;
+        try {
+            const res = await fetch(`/api/history?id=${id}`, { method: 'DELETE' });
+            if (res.ok) {
+                setHistoryItems(prev => prev.filter(item => item.id !== id));
+            }
+        } catch (err) {
+            console.error('[history-delete] error:', err);
+        }
+    };
+
     useEffect(() => {
         fetchHistory();
     }, []);
@@ -847,8 +859,11 @@ export default function App() {
 
         for (const block of blocks) {
             const blockLen = `${block.speaker}: ${block.text}\n`.length;
-            // If adding this block would exceed the hard max AND we already have content, flush
-            if (currentLen + blockLen > CHUNK_MAX && currentChunk.length > 0) {
+            const currentSpeakers = new Set(currentChunk.map(b => b.speaker));
+            const wouldExceedTwoSpeakers = !currentSpeakers.has(block.speaker) && currentSpeakers.size >= 2;
+
+            // If adding this block would exceed the hard max OR introduce a 3rd speaker in the chunk, flush
+            if ((currentLen + blockLen > CHUNK_MAX || wouldExceedTwoSpeakers) && currentChunk.length > 0) {
                 chunks.push(currentChunk);
                 currentChunk = [block];
                 currentLen = blockLen;
@@ -1781,6 +1796,13 @@ Rules:
                                                     <Download className="w-3.5 h-3.5" />
                                                     .WAV
                                                 </a>
+                                                <button
+                                                    onClick={() => handleDeleteHistory(item.id)}
+                                                    className="p-2 rounded-lg bg-zinc-800/80 hover:bg-red-500/20 text-zinc-500 hover:text-red-400 transition-colors"
+                                                    title="Supprimer définitivement"
+                                                >
+                                                    <Trash2 className="w-3.5 h-3.5" />
+                                                </button>
                                             </div>
                                         </div>
                                     );

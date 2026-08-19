@@ -39,7 +39,8 @@ const CREATE_TABLE = `
     download_url  TEXT NOT NULL,
     duration_text TEXT,
     script_excerpt TEXT
-  )
+  );
+  CREATE INDEX IF NOT EXISTS idx_generations_created_at ON generations (created_at DESC);
 `;
 
 async function ensureTable() {
@@ -52,13 +53,22 @@ async function ensureTable() {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // CORS Headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-filename, x-duration, x-script-excerpt');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
   const token = process.env.BLOB_READ_WRITE_TOKEN;
   if (!token) {
-    return res.status(500).json({ error: 'BLOB_READ_WRITE_TOKEN not configured' });
+    return res.status(500).json({ error: 'BLOB_READ_WRITE_TOKEN not configured in environment' });
   }
 
   try {
@@ -68,15 +78,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     const body = Buffer.concat(chunks);
 
-    const filename = (req.headers['x-filename'] as string) || `flow_podcast_${Date.now()}.wav`;
-    const durationText = (req.headers['x-duration'] as string) || '';
+    if (!body || body.length < 44) {
+      return res.status(400).json({ error: 'Audio data is empty or corrupted' });
+    }
+
+    const rawFilename = (req.headers['x-filename'] as string) || `flow_podcast_${Date.now()}.wav`;
+    const cleanFilename = rawFilename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 100);
+    const durationText = ((req.headers['x-duration'] as string) || '').slice(0, 30);
     const scriptExcerptB64 = (req.headers['x-script-excerpt'] as string) || '';
+    
     let scriptExcerpt = '';
     try {
       scriptExcerpt = Buffer.from(scriptExcerptB64, 'base64').toString('utf8').slice(0, 500);
     } catch {}
 
-    const blob = await put(filename, body, {
+    const blob = await put(cleanFilename, body, {
       access: 'public',
       token,
       contentType: 'audio/wav',
@@ -88,7 +104,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         await ensureTable();
         const result = await pool.query(
           'INSERT INTO generations (filename, blob_url, download_url, duration_text, script_excerpt) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-          [filename, blob.url, blob.downloadUrl, durationText, scriptExcerpt]
+          [cleanFilename, blob.url, blob.downloadUrl, durationText, scriptExcerpt]
         );
         dbId = result.rows[0]?.id ?? null;
       } catch (dbErr) {
@@ -100,7 +116,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       success: true,
       url: blob.url,
       downloadUrl: blob.downloadUrl,
-      filename,
+      filename: cleanFilename,
       dbId,
     });
   } catch (err: any) {

@@ -1,8 +1,8 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { del } from '@vercel/blob';
 import { Pool } from 'pg';
 
 function getDbUrl(): string | undefined {
-  // Strip channel_binding param which is not supported by the pg driver
   const raw = process.env.POSTGRES_URL || process.env.DATABASE_URL;
   if (!raw) return undefined;
   try {
@@ -32,33 +32,69 @@ const CREATE_TABLE = `
     download_url  TEXT NOT NULL,
     duration_text TEXT,
     script_excerpt TEXT
-  )
+  );
+  CREATE INDEX IF NOT EXISTS idx_generations_created_at ON generations (created_at DESC);
 `;
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method !== 'GET') return res.status(405).json({ error: 'Method Not Allowed' });
 
   if (!pool) {
     return res.status(200).json({ items: [], postgres_configured: false });
   }
 
-  try {
-    await pool.query(CREATE_TABLE);
+  // DELETE a generation by ID
+  if (req.method === 'DELETE') {
+    try {
+      const id = req.query.id || (typeof req.body === 'object' && req.body?.id);
+      if (!id) {
+        return res.status(400).json({ error: 'Missing generation id' });
+      }
 
-    const result = await pool.query(
-      'SELECT id, created_at, filename, blob_url, download_url, duration_text, script_excerpt FROM generations ORDER BY created_at DESC LIMIT 50'
-    );
+      const result = await pool.query(
+        'DELETE FROM generations WHERE id = $1 RETURNING blob_url',
+        [id]
+      );
 
-    return res.status(200).json({
-      items: result.rows,
-      postgres_configured: true,
-    });
-  } catch (err: any) {
-    console.error('[history] error:', err);
-    return res.status(500).json({ error: err.message, items: [], postgres_configured: false });
+      const deletedBlobUrl = result.rows[0]?.blob_url;
+      const token = process.env.BLOB_READ_WRITE_TOKEN;
+      if (deletedBlobUrl && token) {
+        try {
+          await del(deletedBlobUrl, { token });
+        } catch (delErr) {
+          console.warn('[blob-del] Failed to delete blob file:', delErr);
+        }
+      }
+
+      return res.status(200).json({ success: true, deletedId: id });
+    } catch (err: any) {
+      console.error('[history-delete] error:', err);
+      return res.status(500).json({ error: err.message });
+    }
   }
+
+  // GET generations list
+  if (req.method === 'GET') {
+    try {
+      await pool.query(CREATE_TABLE);
+
+      const result = await pool.query(
+        'SELECT id, created_at, filename, blob_url, download_url, duration_text, script_excerpt FROM generations ORDER BY created_at DESC LIMIT 50'
+      );
+
+      return res.status(200).json({
+        items: result.rows,
+        postgres_configured: true,
+      });
+    } catch (err: any) {
+      console.error('[history-get] error:', err);
+      return res.status(500).json({ error: err.message, items: [], postgres_configured: false });
+    }
+  }
+
+  return res.status(405).json({ error: 'Method Not Allowed' });
 }
